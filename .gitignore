@@ -6,7 +6,7 @@ data/
 subsample_val.py
 
 pretrained_ckpts/
-cosmos-predict1/checkpoints/
-cosmos-predict1/outputs/
+cosmos_predict/checkpoints/
+cosmos_predict/outputs/
 
-cosmos-predict1/assets
+cosmos_predict/assets
