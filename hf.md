@@ -27,7 +27,7 @@ The training dataset is shareded into 100 independent shards. The definitions ar
 - **states_{shard}.bin** - States arrays (defined below in `Index-to-State Mapping`) stored in `np.float32` format. For frame `i`, the corresponding state is represented by `states_{shard}[i]`.
 - **metadata** - The `metadata.json` file provides high-level information about the entire dataset, while `metadata_{shard}.json` files contain specific details for each shard. 
 
-  #### Index-to-State Mapping (NEW)
+  #### Index-to-State Mapping 
   ```
    {
         0: HIP_YAW
