@@ -18,7 +18,6 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import default_data_collator
 
-
 # 1xgpt imports
 sys.path.append(os.getcwd())
 from data import RawTokenDataset
