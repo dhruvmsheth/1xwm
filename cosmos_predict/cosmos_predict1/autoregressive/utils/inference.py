@@ -31,7 +31,7 @@ from cosmos_predict1.utils import log
 _IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", "webp"]
 _VIDEO_EXTENSIONS = [".mp4"]
 _SUPPORTED_CONTEXT_LEN = [1, 9]  # Input frames
-NUM_TOTAL_FRAMES = 33
+NUM_TOTAL_FRAMES = 65
 
 
 def add_common_arguments(parser):
@@ -240,6 +240,7 @@ def read_input_videos(batch_input_path: str, data_resolution: List[int], num_inp
         for line in f:
             data = json.loads(line.strip())
             flist.append(data["visual_input"])
+    # flist is None here since for single video, we don't need to read from JSONL
     return load_videos_from_list(flist, data_resolution=data_resolution, num_input_frames=num_input_frames)
 
 
@@ -267,9 +268,11 @@ def load_videos_from_list(flist: List[str], data_resolution: List[int], num_inpu
     Returns:
         Dict containing input videos
     """
+    # flist is None here since for single video, we don't need to read from JSONL
     all_videos = dict()
 
     for video_path in flist:
+        # only single video for our case here
         ext = os.path.splitext(video_path)[-1]
         if ext in _VIDEO_EXTENSIONS:
             video, _, _ = torchvision.io.read_video(video_path, pts_unit="sec")
@@ -284,7 +287,7 @@ def load_videos_from_list(flist: List[str], data_resolution: List[int], num_inpu
                     f"Video {fname} has {nframes_in_video} frames, less than the requried {num_input_frames} frames. Skipping."
                 )
                 continue
-
+            # only keep the last num_input_frames frames
             video = video[-num_input_frames:, :, :, :]
 
             # Pad the video to NUM_TOTAL_FRAMES (because the tokenizer expects inputs of NUM_TOTAL_FRAMES)
@@ -302,7 +305,7 @@ def load_videos_from_list(flist: List[str], data_resolution: List[int], num_inpu
 
             fname = os.path.basename(video_path)
             all_videos[fname] = video.transpose(0, 1).unsqueeze(0)
-
+    # all videos here is dict with just one key-value pair
     return all_videos
 
 
@@ -312,7 +315,7 @@ def load_vision_input(
     input_image_or_video_path: str,
     data_resolution: List[int],
     num_input_frames: int,
-):
+) -> dict[str, torch.Tensor]:
     """
     Function to load vision input.
     Note: We pad the frames of the input image/video to NUM_TOTAL_FRAMES here, and feed the padded video tensors to the video tokenizer to obtain tokens. The tokens will be truncated based on num_input_frames when feeding to the autoregressive model.
@@ -325,11 +328,15 @@ def load_vision_input(
     Returns:
         Dict containing input videos
     """
+    # @NOTE:
+    # for single video, we don't need to read from JSONL
     if batch_input_path:
         log.info(f"Reading batch inputs from path: {batch_input_path}")
         if input_type == "image" or input_type == "text_and_image":
             input_videos = read_input_images(batch_input_path, data_resolution=data_resolution)
+        # 1x challenge will be using this
         elif input_type == "video" or input_type == "text_and_video":
+
             input_videos = read_input_videos(
                 batch_input_path,
                 data_resolution=data_resolution,
@@ -337,10 +344,15 @@ def load_vision_input(
             )
         else:
             raise ValueError(f"Invalid input type {input_type}")
+    # @NOTE:
     else:
         if input_type == "image" or input_type == "text_and_image":
             input_videos = read_input_image(input_image_or_video_path, data_resolution=data_resolution)
+        # 1x challenge will be using this
+        # @NOTE:
         elif input_type == "video" or input_type == "text_and_video":
+            # this is dict with just one key-value pair
+            # should be dict[os.path.basename(video_path)] = video: torch.Tensor
             input_videos = read_input_video(
                 input_image_or_video_path,
                 data_resolution=data_resolution,

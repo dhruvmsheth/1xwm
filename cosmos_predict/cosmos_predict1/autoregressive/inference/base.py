@@ -23,7 +23,6 @@ from cosmos_predict1.autoregressive.inference.world_generation_pipeline import A
 from cosmos_predict1.autoregressive.utils.inference import add_common_arguments, load_vision_input, validate_args
 from cosmos_predict1.utils import log
 
-
 def parse_args():
     parser = argparse.ArgumentParser(description="Video to world generation demo script")
     # Add common arguments
@@ -85,6 +84,8 @@ def main(args):
         parallel_size=args.num_gpus,
     )
 
+    # for single video, this is dict with just one key-value pair
+    # should be dict[os.path.basename(video_path)] = video: torch.Tensor
     input_videos = load_vision_input(
         input_type=args.input_type,
         batch_input_path=args.batch_input_path,
@@ -93,7 +94,14 @@ def main(args):
         num_input_frames=args.num_input_frames,
     )
 
+    # @NOTE:
+    # for single video, this is dict with just one key-value pair
+    # should be dict[os.path.basename(video_path)] = video: torch.Tensor
+    # the video contains num_input_frames last frames of the original video
+    # then it contains NUM_TOTAL_FRAMES frames after padding which is just the last frame repeated NUM_TOTAL_FRAMES times
+    # the video is of shape (1, NUM_TOTAL_FRAMES, 3, H, W)
     for idx, input_filename in enumerate(input_videos):
+        # this is the video tensor of shape (1, NUM_TOTAL_FRAMES, 3, H, W)
         inp_vid = input_videos[input_filename]
         # Generate video
         log.info(f"Run with image or video path: {input_filename}")

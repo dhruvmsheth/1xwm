@@ -123,8 +123,8 @@ def create_inference_config(
         tensor_model_parallel_size=parallel_size,
         rope_dim="3D",
         add_special_tokens=False,
-        pixel_chunk_duration=33,
-        num_video_frames=33,
+        pixel_chunk_duration=65,
+        num_video_frames=65,
         num_condition_latents_t=1,
         batch_size=batch_size,
         video_height=640,
@@ -225,7 +225,7 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
             )
             self.diffusion_decoder_config = "DD_FT_7Bv1_003_002_tokenizer888_spatch2_discrete_cond_on_token"
             self.diffusion_decoder_tokenizer_path = os.path.join(checkpoint_dir, "Cosmos-Tokenize1-CV8x8x8-720p")
-            self.dd_sampling_config = DiffusionDecoderSamplingConfig()
+            self.dd_sampling_config = DiffusionDecoderSamplingConfig(dd_train_num_video_frames=121)
             aux_vars_path = os.path.join(os.path.dirname(self.diffusion_decoder_ckpt_path), "aux_vars.pt")
             # We use a generic prompt when no text prompts are available for diffusion decoder.
             # Generic prompt used - "high quality, 4k, high definition, smooth video"
@@ -365,6 +365,7 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
             )
         """
         # Choosing the context length from list of available contexts
+        # @NOTE:
         out_videos_cur_batch, indices_tensor_cur_batch = self._run_model(
             inp_vid, num_input_frames, seed, sampling_config
         )
@@ -384,7 +385,7 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
         Handles context frame selection and token generation.
 
         Args:
-            inp_vid (torch.Tensor): Input video tensor of shape
+            inp_vid (torch.Tensor): Input video tensor of shape (1, NUM_TOTAL_FRAMES, 3, H, W) since batch size is 1.
             num_input_frames (int): Number of context frames to use from input. The tensor shape should be (B x T x 3 x H x W).
             seed (int): Random seed for generation
             sampling_config (SamplingConfig): Configuration for sampling parameters
@@ -508,6 +509,7 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
 
         Args:
             inp_vid: Input video tensor of shape (batch_size, time, channels=3, height, width)
+            # for our case, batch_size is 1
             sampling_config: Parameters controlling the generation process
             num_input_frames: Number of input frames to use as context (default: 9)
             seed: Random seed for reproducibility (default: 0)
@@ -517,10 +519,13 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
                 if generation successful, None if safety checks fail
         """
         log.info("Run generation")
+        # @NOTE: (this is where the AR generation happens)
         out_videos_cur_batch, indices_tensor_cur_batch = self._run_model_with_offload(
             inp_vid, num_input_frames, seed, sampling_config
         )
         log.info("Finish AR model generation")
+        print(f"shape of out_videos_cur_batch: {out_videos_cur_batch[0].shape}")
+        print(f"shape of indices_tensor_cur_batch: {indices_tensor_cur_batch[0].shape}")
 
         if not self.disable_diffusion_decoder:
             log.info("Run diffusion decoder on generated tokens")
