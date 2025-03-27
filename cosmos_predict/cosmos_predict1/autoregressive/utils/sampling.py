@@ -112,14 +112,32 @@ def prefill(
     top_p: Optional[float] = None,
     **kwargs,
 ) -> torch.Tensor:
+    """
+    Prefill stage of the model. This helps us get the logits for the next token. Why? Because we need to know the probability distribution of the next token to sample from it.
+    Args:
+        model: Transformer class instance
+        input_pos: tensor of shape (1,) containing the position of the next token to be generated
+        tokens: tensor of shape (1, 0) containing the tokens to be used as context for the video generation
+        token_embeddings: tensor of shape (1, 0, 768) containing the token embeddings for the tokens to be used as context for the video generation
+        temperature: temperature for sampling
+        top_k: top-k for sampling
+        top_p: top-p for sampling
+    """
+    # Transformer class instance has a forward method that takes in tokens, token_embeddings, input_pos, and **kwargs
+    # **kwargs is a dictionary that contains the arguments for the forward method
+    # in our case, **kwargs is empty
     logits = model(tokens=tokens, token_embeddings=token_embeddings, input_pos=input_pos, **kwargs)
     # Only top-p or top-k can be provided
     assert (
         top_p is None or top_k is None
     ), "Only one of top-p or top-k can be provided, got top-p={top_p} and top-k={top_k}"
     if top_p is not None:
-        return sample_top_p(logits, temperature=temperature, top_p=top_p)[0]
+        # Returns:
+        # torch.Tensor: Sampled token indices.
+        return sample_top_p(logits, temperature=temperature, top_p=top_p)[0] # first token index highest top-p probability
     else:
+        # Returns:
+        # torch.Tensor: Sampled token indices.
         return sample_top_k(logits, temperature=temperature, top_k=top_k)[0]
 
 

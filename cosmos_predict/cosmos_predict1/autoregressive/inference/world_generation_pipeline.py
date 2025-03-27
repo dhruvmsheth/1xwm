@@ -35,7 +35,7 @@ from cosmos_predict1.autoregressive.configs.inference.inference_config import (
 from cosmos_predict1.autoregressive.diffusion_decoder.inference import diffusion_decoder_process_tokens
 from cosmos_predict1.autoregressive.diffusion_decoder.model import LatentDiffusionDecoderModel
 from cosmos_predict1.autoregressive.model import AutoRegressiveModel, update_model_config
-from cosmos_predict1.autoregressive.utils.inference import _SUPPORTED_CONTEXT_LEN, prepare_video_batch_for_saving
+from cosmos_predict1.autoregressive.utils.inference import _SUPPORTED_CONTEXT_LEN, prepare_video_batch_for_saving, INPUTS
 from cosmos_predict1.autoregressive.utils.parallel import broadcast_data_batch_in_tp_cp_group, get_batch_on_this_cp_rank
 from cosmos_predict1.diffusion.inference.inference_utils import (
     load_model_by_config,
@@ -123,12 +123,12 @@ def create_inference_config(
         tensor_model_parallel_size=parallel_size,
         rope_dim="3D",
         add_special_tokens=False,
-        pixel_chunk_duration=65,
-        num_video_frames=65,
-        num_condition_latents_t=1,
+        pixel_chunk_duration=INPUTS["PIXEL_CHUNK_DURATION_I"],
+        num_video_frames=INPUTS["NUM_TOTAL_FRAMES_I"],
+        num_condition_latents_t=INPUTS["NUM_CONDITION_LATENTS_T_I"],
         batch_size=batch_size,
-        video_height=640,
-        video_width=1024,
+        video_height=INPUTS["VIDEO_HEIGHT_I"],
+        video_width=INPUTS["VIDEO_WIDTH_I"],
         **kwargs,
     )
 
@@ -397,10 +397,18 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
                 List of prompt embedding tensors
             )
         """
+        print(f"inp_vid shape: {inp_vid.shape}")
+        # input video contains 33 frames with 9 as gt frame and the last frame repeated 24 times.
+        # input video shape is torch.Size([1, 3, NUM_TOTAL_FRAMES, 640, 1024])
         if self.parallel_size > 1:
             parallel_state.initialize_model_parallel(tensor_model_parallel_size=self.parallel_size)
 
         # Choosing the context length from list of available contexts
+        # This code determines how many input frames to use for context and calculates the corresponding
+        # latent context size. It iterates through supported context lengths (e.g., 1, 9) and selects
+        # the largest supported length that doesn't exceed the provided num_input_frames.
+        # For each valid context length, it increments the latent_context_t_size by 1.
+        # The final context_used value represents the number of frames that will be used from the input video.
         latent_context_t_size = 0
         context_used = 0
         for _clen in self._supported_context_len:
@@ -408,6 +416,7 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
                 context_used = _clen
                 latent_context_t_size += 1
         log.info(f"Using input size of {context_used} frames")
+        print(f"latent_context_t_size: {latent_context_t_size}")
 
         data_batch = {"video": inp_vid}
         data_batch = misc.to(data_batch, "cuda")
@@ -415,6 +424,7 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
         T, H, W = self.latent_shape
         num_gen_tokens = int(np.prod([T - latent_context_t_size, H, W]))
 
+        # @NOTE: (this is where the AR generation happens)
         out_videos_cur_batch, indices_tensor_cur_batch = self.generate_partial_tokens_from_data_batch(
             data_batch=data_batch,
             num_tokens_to_generate=num_gen_tokens,
@@ -621,6 +631,8 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
         out_indices_tensors[chunk_idx] = []
 
         # get the context embedding and mask
+        # @NOTE: 
+        # we dont have context and context_mask in our case
         context = data_batch.get("context", None) if task_condition != "video" else None
         context_mask = data_batch.get("context_mask", None) if task_condition != "video" else None
         if context is not None:
@@ -629,12 +641,27 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
             context_mask = misc.to(context_mask, "cuda").detach().clone()
 
         # get the video tokens
+        # NOTE: This is where the TOKENIZATION happens
+
+        ######################### TOKENIZATION happens here #########################
         data_tokens, token_boundaries = self.model.tokenizer.tokenize(data_batch=data_batch)
         data_tokens = misc.to(data_tokens, "cuda").detach().clone()
         if parallel_state.get_context_parallel_world_size() > 1:
             data_tokens = get_batch_on_this_cp_rank(data_tokens)
-        batch_size = data_tokens.shape[0]
+        ######################### TOKENIZATION happens here #########################
 
+        # for our case:
+        # data_tokens shape: torch.Size([1, 23040])
+        # batch_size: 1
+        # token_boundaries: dict_keys(['video'])
+        # this is because only 1 video exists and there are 23040 tokens in the video
+        # why 23040? 
+        print(f"data_tokens shape: {data_tokens.shape}")
+        batch_size = data_tokens.shape[0]
+        print(f"batch_size: {batch_size}")
+        print(f"token_boundaries: {token_boundaries.keys()}")
+
+        # NOTE: again, batch_size is 1 for our case
         for sample_num in range(batch_size):
             input_tokens = data_tokens[sample_num][0 : token_boundaries["video"][sample_num][1]]  # [B, L]
             input_tokens = [
@@ -646,6 +673,7 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
             )
             video_start_boundary = token_boundaries["video"][sample_num][0] + num_bov_tokens
 
+            # context and context_mask are None in our case but for the text models, there is context
             video_decoded, indices_tensor = self.generate_video_from_tokens(
                 prompt_tokens=input_tokens,
                 latent_shape=latent_shape,
@@ -726,6 +754,7 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
         if self.offload_network:
             self._load_network()
 
+        # using a llama AR model instance for generation
         generation_tokens, _ = self.model.generate(
             prompt_tokens=prompt_tokens,
             temperature=sampling_config.temperature,
@@ -1005,6 +1034,13 @@ class ARVideo2WorldGenerationPipeline(ARBaseGenerationPipeline):
             log.info("Pass guardrail on prompt")
 
         log.info("Run text embedding on prompt")
+        # in our case, inp_prompt is empty, it isnt passed as an argument to the function in the first place
+        # what happens if we pass an empty string?
+        # it will be converted to a list containing an empty string
+        # and then the tokenizer will tokenize the empty string
+        # which will result in a tensor of shape (1, 0)
+        # which means nothign?
+        
         prompt_embeddings, prompt_masks = self._run_text_embedding_on_prompt_with_offload([inp_prompt])
         prompt_embedding = prompt_embeddings[0]
         prompt_mask = prompt_masks[0]

@@ -413,6 +413,14 @@ class AutoRegressiveModel(torch.nn.Module):
             compile_prefill (bool, optional): Flag indicating whether to compile the prefill function. Defaults to False.
             verbose (bool, optional): Flag indicating whether to print the the time. Defaults to False.
         """
+        # context and context_mask are None in our case but for the text models, there is context
+        # max_gen_len is max_number of tokens to generate
+        # max tokens to generate is int(np.prod([T - latent_context_t_size, H, W]))
+        # T is NUM_TOTAL_FRAMES_I // 8 + 1
+        # latent_context_t_size is the compressed number of frames in the input video that will be used as context for the video generation
+        # in our case, latent_context_t_size is 2 since 9 // 8 + 1 = 2
+        # so, np.prod([T - latent_context_t_size, H, W]) = np.prod([9 - 2, 40, 64]) = 17920 where 9 is when NUM_TOTAL_FRAMES_I = 65. This would change
+        # but, 2 would remain constant since that is dependent on the model architecture
         assert top_k is None or top_p is None, f"Only one of top_k ({top_k} or top_p ({top_p} should be specified."
         if temperature == 0:
             top_p, top_k = None, None
@@ -468,7 +476,10 @@ class AutoRegressiveModel(torch.nn.Module):
             prompt_tokens = prompt_tokens.view(1, -1)
         else:
             assert prompt_tokens.ndim == 2, f"prompt_tokens has shape {prompt_tokens.shape}"
-        batch_size, prompt_len = prompt_tokens.shape
+        print(f"prompt_tokens: {prompt_tokens.shape}")
+        batch_size, prompt_len = prompt_tokens.shape 
+        # batch size = 1 and prompt_len = ((NUM_TOTAL_FRAMES_I // 8 + 1) * (WIDTH_I // 16) * (HEIGHT_I // 16)) since model is 8x16x16 DV encoder
+        print(f"prompt_len: {prompt_len}")
         total_len = min(params.max_seq_len, max_gen_len + prompt_len)
         if max_gen_len + prompt_len > params.max_seq_len:
             log.warning(
@@ -503,8 +514,9 @@ class AutoRegressiveModel(torch.nn.Module):
 
         # create an empty tensor of the expected final shape and fill in the current tokens
         empty = torch.empty(batch_size, total_len, dtype=prompt_tokens.dtype, device=prompt_tokens.device)
-        empty[:, :prompt_len] = prompt_tokens
+        empty[:, :prompt_len] = prompt_tokens # original encoded prompt tokens are filled in the first prompt_len tokens of the empty tensor
         seq = empty
+        # why is input_pos a tensor of shape ([prompt_len])?
         input_pos = torch.arange(0, prompt_len, device="cuda")
 
         if verbose:
@@ -520,6 +532,7 @@ class AutoRegressiveModel(torch.nn.Module):
             context = context.to(device=prompt_tokens.device, dtype=self.precision)
 
         # Prefill stage
+        # returns index of logit with highest probability
         next_token = self.prefill(
             self.model,
             input_pos=input_pos,
@@ -542,11 +555,13 @@ class AutoRegressiveModel(torch.nn.Module):
         if verbose:
             decode_start = time.time()
         # Decode stage
+        # self.model is Transformer class instance
+        # convert next_token to tensor of shape 
         generated_tokens = decode_n_tokens(
             self.model,
-            next_token.view(batch_size, -1),
-            input_pos,
-            max_gen_len - 1,
+            cur_token=next_token.view(batch_size, -1),
+            input_pos=input_pos,
+            num_new_tokens=max_gen_len - 1,
             temperature=temperature,
             top_k=top_k,
             top_p=top_p,

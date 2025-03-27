@@ -180,6 +180,7 @@ class DiscreteMultimodalTokenizer:
 
         quantized_out, _ = self.video_tokenizer.encode(videos, pixel_chunk_duration=pixel_chunk_duration)
         indices = self.video_tokenizer.fsq_quantizer.codes_to_indices(quantized_out.permute(0, 2, 3, 4, 1))
+        print(f"quantized_out shape: {quantized_out.shape}")
 
         # Flatten the indices
         indices = rearrange(indices, "B T H W -> B (T H W)")
@@ -201,8 +202,10 @@ class DiscreteMultimodalTokenizer:
                 for i in range(batch_size):
                     video_tokens.append([bov_token] + indices[i].tolist())
             else:
+                # NOTE:
                 for i in range(batch_size):
                     video_tokens.append(indices[i].tolist())
+                    print(f"video_tokens[-1]: {len(video_tokens[-1])}")
                     assert (
                         len(video_tokens[-1]) == self.tokenizer_config.video_tokenizer.max_seq_len
                     ), f"Expected {self.tokenizer_config.video_tokenizer.max_seq_len} tokens, got {len(video_tokens[-1])}; video shape: {videos.shape}"
@@ -285,6 +288,7 @@ class DiscreteMultimodalTokenizer:
         if self.video_tokenizer is not None and self.tokenizer_config.video_tokenizer.tokenize_here:
             key = self.tokenizer_config.video_tokenizer.data_key
             assert key in data_batch, f"Key {key} should be present in data for video tokenizer"
+            # batch_size is 1 for our case
             batch_size = len(data_batch[key]) if batch_size is None else batch_size
 
             pixel_chunk_duration = (
@@ -301,7 +305,9 @@ class DiscreteMultimodalTokenizer:
                     token_boundaries["video"].append((0, len(tokens[i])))
                     # [B,] each entry is ((0, len(tokens[i])))
             else:
+                # NOTE:
                 for i in range(batch_size):
+                    # batch_size is 1 for our case
                     token_boundaries["video"].append((len(tokens[i]), len(tokens[i]) + len(tokens_video[i])))
                     tokens[i] = tokens[i] + tokens_video[i]
 

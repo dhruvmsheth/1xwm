@@ -93,6 +93,7 @@ def main(args):
         data_resolution=args.data_resolution,
         num_input_frames=args.num_input_frames,
     )
+    print("completed loading input videos")
 
     # @NOTE:
     # for single video, this is dict with just one key-value pair
