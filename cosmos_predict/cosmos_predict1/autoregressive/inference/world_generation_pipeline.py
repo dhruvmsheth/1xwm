@@ -20,6 +20,9 @@ import os
 from typing import List, Optional, Tuple
 from collections import defaultdict
 
+from torch.nn import functional as F
+import torch.nn as nn
+
 import numpy as np
 import torch
 import torch.distributed as dist
@@ -414,7 +417,8 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
                 List of prompt embedding tensors
             )
         """
-        print(f"inp_vid shape: {inp_vid.shape}")
+        if inp_vid is not None:
+            print(f"inp_vid shape: {inp_vid.shape}")
         # input video contains 33 frames with 9 as gt frame and the last frame repeated 24 times.
         # input video shape is torch.Size([1, 3, NUM_TOTAL_FRAMES, 640, 1024])
         if self.parallel_size > 1:
@@ -457,7 +461,7 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
         else:
             T, H, W = 3, 32, 32
             self.latent_shape = (T, H, W)
-            out_videos_cur_batch, indices_tensor_cur_batch = self.eval_AR_on_tokens(
+            avg_ce_loss = self.eval_AR_on_tokens(
                 token_map=token_map,
                 latent_shape=self.latent_shape,
                 sampling_config=sampling_config,
@@ -471,7 +475,8 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
         if self.parallel_size > 1:
             parallel_state.destroy_model_parallel()
 
-
+        return None, None
+    
     def _run_diffusion_decoder(
         self,
         out_videos_cur_batch: List[torch.Tensor],
@@ -788,6 +793,25 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
         
         return flatten_tokens.detach().clone(), token_boundaries
 
+    def ce_tokens(self, generated_tokens: torch.Tensor, ground_truth_tokens: torch.Tensor) -> float:
+        """
+        Calculate cross entropy loss between generated and ground truth tokens.
+        
+        Args:
+            generated_tokens (torch.Tensor): Generated tokens of shape (32*32,)
+            ground_truth_tokens (torch.Tensor): Ground truth tokens of shape (32*32,)
+
+        Returns:
+            float: Cross entropy loss
+        """
+        num_classes = 64000
+        # Reshape predictions to (batch_size, num_classes)
+        predictions = F.one_hot(generated_tokens, num_classes=num_classes).float()
+        
+        criterion = nn.CrossEntropyLoss()
+        loss = criterion(predictions, ground_truth_tokens)
+        return loss
+
     @torch.inference_mode()
     def eval_AR_on_tokens(
         self,
@@ -878,9 +902,11 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
         batch_size = data_tokens.shape[0]
         print(f"batch_size: {batch_size}")
         print(f"token_boundaries: {token_boundaries.keys()}")
-
+        ce_losses = []
         # NOTE: again, batch_size is 1 for our case
         for sample_num in range(batch_size):
+            # torch.Size([1, 3 * 32 *32])
+            ground_truth_tokens = data_tokens[sample_num]
             input_tokens = data_tokens[sample_num][0 : token_boundaries["video"][sample_num][1]]  # [B, L]
             num_tokens_to_generate = data_tokens[sample_num].shape[0] - token_boundaries["video"][sample_num][1]
             input_tokens_list = [input_tokens.tolist()]  # -1 is to exclude eov token
@@ -892,6 +918,7 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
             video_start_boundary = token_boundaries["video"][sample_num][0] + num_bov_tokens
 
             # context and context_mask are None in our case but for the text models, there is context
+            # torch.Size([1, 32*32])
             generated_tokens = self._generate_tokens(
                 prompt_tokens=input_tokens_list,
                 latent_shape=latent_shape,
@@ -903,14 +930,18 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
                 context=context,
                 context_mask=context_mask,
             )  
+            ground_truth_future_tokens = ground_truth_tokens[len(input_tokens):].reshape(-1)  # Reshape to (32*32,)
+            generated_future_tokens = generated_tokens[0, len(input_tokens):].reshape(-1)  # Remove batch dim and reshape
+            ce_loss = self.ce_tokens(generated_future_tokens, ground_truth_future_tokens)
+            print(f"ce_loss for sample {sample_num}: {ce_loss}")
+            ce_losses.append(ce_loss)
 
         # TODO: 
-        predicted_tokens = generated_tokens[:, len(input_tokens):]
-        ground_truth_tokens = data_tokens[:, len(input_tokens):]
-        # each token is int32 type number between 0 and 64000 from codebook of 64000 tokens. 
-        # calculate cross_entropy loss between generated_tokens and data_tokens
-        # ce_loss = ce_tokens(generated_tokens, data_tokens, token_boundaries)
-        return None
+        # average the ce_loss over all samples
+        # return the average ce_loss
+        avg_ce_loss = sum(ce_losses) / len(ce_losses)
+        print(f"avg_ce_loss: {avg_ce_loss}")
+        return avg_ce_loss
 
     def _generate_tokens(
         self,

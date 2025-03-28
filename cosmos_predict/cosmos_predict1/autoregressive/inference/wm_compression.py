@@ -116,7 +116,7 @@ def main(args):
         num_input_frames=args.num_input_frames,
         seed=args.seed,
         sampling_config=sampling_config,
-        token_path=token_map,
+        token_map=token_map,
         only_eval=args.only_eval
     )
     if out_vid is None and not args.only_eval:
