@@ -196,6 +196,7 @@ def decode_n_tokens(
                 top_p=top_p,
                 **kwargs,
             )
+            #print(f"next_token: {next_token}")
             input_pos += 1
             if stop_tokens is not None and len(stop_tokens) > 0:
                 eos_reached = eos_reached | (torch.isin(next_token, stop_tokens))

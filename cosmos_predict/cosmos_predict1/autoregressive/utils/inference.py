@@ -31,15 +31,15 @@ from cosmos_predict1.utils import log
 _IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", "webp"]
 _VIDEO_EXTENSIONS = [".mp4"]
 _SUPPORTED_CONTEXT_LEN = [1, 9]  # Input frames
-NUM_TOTAL_FRAMES = 97
+NUM_TOTAL_FRAMES = 17
 
 # meaning of each input:
-# pixel chunk duration represents the number of frames in each chunk of the video
+# pixel chunk duration represents the number of frames in each chunk of the video. 
 # num total frames represents the total number of frames in the video
 # num condition latents t means the number of frames in the video that are used as condition for the video generation
 # video height and video width represent the height and width of the video
 INPUTS = {
-    "PIXEL_CHUNK_DURATION_I": 97,
+    "PIXEL_CHUNK_DURATION_I": 17,
     "NUM_TOTAL_FRAMES_I": NUM_TOTAL_FRAMES,
     "NUM_CONDITION_LATENTS_T_I": 1,
     "VIDEO_HEIGHT_I": 640,
@@ -67,6 +67,11 @@ def add_common_arguments(parser):
         "--input_image_or_video_path",
         type=str,
         help="Input path for input image or video",
+    )
+    parser.add_argument(
+        "--input_tokens_dir",
+        type=str,
+        help="Input directory for input tokens",
     )
     parser.add_argument(
         "--batch_input_path",
@@ -138,7 +143,7 @@ def validate_args(args: argparse.Namespace, inference_type: str):
     ), "--input_image_or_video_path or --batch_input_path must be provided."
     if inference_type == "video2world" and (not args.batch_input_path):
         assert args.prompt, "--prompt is required for single video generation."
-    args.data_resolution = [640, 1024]
+    args.data_resolution = [INPUTS["VIDEO_HEIGHT_I"], INPUTS["VIDEO_WIDTH_I"]]
 
     # Create output folder
     Path(args.video_save_folder).mkdir(parents=True, exist_ok=True)
@@ -150,6 +155,15 @@ def validate_args(args: argparse.Namespace, inference_type: str):
         compile_sampling=True,
     )
     return sampling_config
+
+def retrieve_token_path(token_dir: str):
+    token_path = {
+        "tokens": os.path.join(token_dir, "video_0.bin"),
+        "states": os.path.join(token_dir, "states_0.bin"),
+        "metadata": os.path.join(token_dir, "metadata_0.json"),
+        "segments": os.path.join(token_dir, "segments_idx_0.json"),
+    }
+    return token_path
 
 
 def resize_input(video: torch.Tensor, resolution: list[int]):

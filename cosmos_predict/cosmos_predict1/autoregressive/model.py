@@ -580,7 +580,7 @@ class AutoRegressiveModel(torch.nn.Module):
 
         generated_tokens = torch.cat(generated_tokens, dim=1)
 
-        log.debug(f"generated_tokens: {generated_tokens.shape}")
+        print(f"generated_tokens: {generated_tokens.shape}")
         seq = seq[:, : prompt_len + 1 + gen_len]
         seq[:, prompt_len + 1 :] = generated_tokens
         if not echo:
