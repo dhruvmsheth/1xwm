@@ -395,6 +395,7 @@ class AutoRegressiveModel(torch.nn.Module):
         verbose: bool = True,
         stop_tokens: Optional[Set[int]] = None,
         images: Optional[torch.Tensor] = None,
+        eval_only: bool = False,
     ):
         """
         Autoregressive generation built upon the gpt-fast implementation (https://github.com/pytorch-labs/gpt-fast).
@@ -532,18 +533,42 @@ class AutoRegressiveModel(torch.nn.Module):
             context = context.to(device=prompt_tokens.device, dtype=self.precision)
 
         # Prefill stage
-        # returns index of logit with highest probability
-        next_token = self.prefill(
-            self.model,
-            input_pos=input_pos,
-            tokens=prompt_tokens if prompt_token_embeddings is None else None,
-            token_embeddings=prompt_token_embeddings,
-            temperature=temperature,
-            top_k=top_k,
-            top_p=top_p,
-            context=context,
-            context_mask=context_mask,
-        )
+        if not eval_only:
+            # Regular generation - just get the next token
+            next_token = self.prefill(
+                self.model,
+                input_pos=input_pos,
+                tokens=prompt_tokens if prompt_token_embeddings is None else None,
+                token_embeddings=prompt_token_embeddings,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+                context=context,
+                context_mask=context_mask,
+            )
+            prefill_logits = None  # Not needed for regular generation
+        else:
+            # Evaluation mode - get both next token and logits
+            next_token, prefill_logits = self.prefill(
+                self.model,
+                input_pos=input_pos,
+                tokens=prompt_tokens if prompt_token_embeddings is None else None,
+                token_embeddings=prompt_token_embeddings,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+                context=context,
+                context_mask=context_mask,
+                eval_only=True,
+            )
+            
+            # Extract only the logits for the last token position (the one we sample from)
+            # This should be at position prompt_len-1
+            prefill_last_logits = prefill_logits[:, -1:, :]  # Shape [batch_size, 1, vocab_size]
+            
+            print(f"Original prefill logits shape: {prefill_logits.shape}")
+            print(f"Last token prefill logits shape: {prefill_last_logits.shape}")
+
         if verbose:
             prefill_time = time.time() - prefill_start
 
@@ -554,31 +579,70 @@ class AutoRegressiveModel(torch.nn.Module):
 
         if verbose:
             decode_start = time.time()
+
         # Decode stage
-        # self.model is Transformer class instance
-        # convert next_token to tensor of shape 
-        generated_tokens = decode_n_tokens(
-            self.model,
-            cur_token=next_token.view(batch_size, -1),
-            input_pos=input_pos,
-            num_new_tokens=max_gen_len - 1,
-            temperature=temperature,
-            top_k=top_k,
-            top_p=top_p,
-            stop_tokens=stop_tokens,
-            decode_one_token_function=self.decode_one_token,
-            context=context,
-            context_mask=context_mask,
-        )
-        gen_len = len(generated_tokens)
+        if not eval_only:
+            generated_tokens = decode_n_tokens(
+                self.model,
+                cur_token=next_token.view(batch_size, -1),
+                input_pos=input_pos,
+                num_new_tokens=max_gen_len - 1,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+                stop_tokens=stop_tokens,
+                decode_one_token_function=self.decode_one_token,
+                context=context,
+                context_mask=context_mask,
+            )
+            gen_len = len(generated_tokens)
+            generated_tokens = torch.cat(generated_tokens, dim=1)
+        else:
+            # For evaluation, get both tokens and logits
+            generated_tokens, all_logits = decode_n_tokens(
+                self.model,
+                cur_token=next_token.view(batch_size, -1),
+                input_pos=input_pos,
+                num_new_tokens=max_gen_len - 1,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+                stop_tokens=stop_tokens,
+                decode_one_token_function=self.decode_one_token,
+                context=context,
+                context_mask=context_mask,
+                eval_only=True,
+            )
+            gen_len = len(generated_tokens)
+            generated_tokens = torch.cat(generated_tokens, dim=1)
+            
+            # Print the original shapes for debugging
+            print(f"prefill_last_logits shape: {prefill_last_logits.shape}")
+            print(f"all_logits original shape: {all_logits.shape}")
+            
+            # Handle different dimension scenarios
+            if all_logits.dim() == 4:  # If all_logits has 4 dimensions
+                # Most likely shape: [batch_size, seq_len, something, vocab_size]
+                # We need to reshape to 3D by combining seq_len and the extra dimension
+                all_logits_reshaped = all_logits.view(all_logits.size(0), -1, all_logits.size(-1))
+                print(f"all_logits reshaped to 3D: {all_logits_reshaped.shape}")
+                
+                # Now concatenate with prefill_last_logits (which is 3D)
+                stacked_logits = torch.cat([prefill_last_logits, all_logits_reshaped], dim=1)
+            else:  # If already 3D (matching prefill_last_logits)
+                # Normal case - just concatenate
+                stacked_logits = torch.cat([prefill_last_logits, all_logits], dim=1)
+            
+            print(f"Prefill last token logits shape: {prefill_last_logits.shape if prefill_last_logits is not None else None}")
+            print(f"All logits shape: {all_logits.shape}")
+            print(f"Combined logits shape: {stacked_logits.shape}")
+        
         if verbose:
             decode_time = time.time() - decode_start
             prefill_throughput = prompt_len / prefill_time
             decode_throughput = gen_len / decode_time
             log.debug(f"[Prefill] Time: {prefill_time:.2f}s; Throughput: {prefill_throughput:.2f} tokens/s")
             log.debug(f"[Decode] Time: {decode_time:.2f}s; Throughput: {decode_throughput:.2f} tokens/s")
-
-        generated_tokens = torch.cat(generated_tokens, dim=1)
 
         print(f"generated_tokens: {generated_tokens.shape}")
         seq = seq[:, : prompt_len + 1 + gen_len]
@@ -588,7 +652,10 @@ class AutoRegressiveModel(torch.nn.Module):
 
         torch.set_default_dtype(orig_precision)  # Reset the default dtype to the original value
 
-        return seq, None
+        if eval_only:
+            return seq, stacked_logits
+        else:
+            return seq, None
 
     def embed_vision_language_features(self, input_ids: torch.Tensor, images: torch.tensor) -> torch.Tensor:
         """

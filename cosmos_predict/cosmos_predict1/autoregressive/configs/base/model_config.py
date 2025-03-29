@@ -323,6 +323,7 @@ def create_video2world_model_config(
     pad_to_multiple_of: Optional[int] = 64,
     vocab_size: int = 64000,
     apply_abs_pos_emb: bool = False,
+    enable_tokenizer: bool = False,
 ) -> dict:
     """Create a video-to-world model config.
     Args:
@@ -351,6 +352,7 @@ def create_video2world_model_config(
         pad_to_multiple_of (int): Pad the token sequence length to the nearest multiple of this number. Defaults to 64.
         vocab_size (int): Vocabulary size.
         apply_abs_pos_emb (bool): Whether to apply absolute positional embeddings.
+        enable_tokenizer (bool): Whether to enable the tokenizer.
     Returns:
         dict: A dictionary containing the model configuration representing the model object, can be instantiated.
     """
@@ -422,9 +424,10 @@ def create_video2world_model_config(
     video_tokenizer_config = video_tokenizer_config_creator(
         tokenizer_ckpt_path, pixel_chunk_duration, compression_ratio
     )
-    tokenizer_config = TokenizerConfig(
-        text_tokenizer=None,
-        video_tokenizer=VideoTokenizerConfig(
+    if enable_tokenizer:
+        tokenizer_config = TokenizerConfig(
+            text_tokenizer=None,
+            video_tokenizer=VideoTokenizerConfig(
             config=video_tokenizer_config,
             data_key="video",
             tokenizer_offset=0,  # Since there is no text embeddings in the model. Note this only apply when the model is trained from scratch. If we use text pretrained model, the offset will be vocab_size of text token.
@@ -432,11 +435,13 @@ def create_video2world_model_config(
             max_seq_len=num_token_video_latent,
             vocab_size=vocab_size,
         ),
-        seq_len=seq_len,
-        training_type=training_type,
-        add_special_tokens=add_special_tokens,
-        pad_to_multiple_of=pad_to_multiple_of,
-    )
+            seq_len=seq_len,
+            training_type=training_type,
+            add_special_tokens=add_special_tokens,
+            pad_to_multiple_of=pad_to_multiple_of,
+        )
+    else:
+        tokenizer_config = None
     return model_config, tokenizer_config
 
 

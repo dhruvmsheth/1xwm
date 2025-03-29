@@ -29,14 +29,16 @@ def parse_args() -> argparse.Namespace:
         "--tokenizer_types",
         nargs="*",
         default=[
-            "CV8x8x8-720p",
-            "DV8x16x16-720p",
-            "CI8x8-360p",
-            "CI16x16-360p",
-            "CV4x8x8-360p",
-            "DI8x8-360p",
-            "DI16x16-360p",
-            "DV4x8x8-360p",
+            "DV8x8x8",
+            #"CV8x8x8-720p",
+            #"DV8x16x16-720p",
+            #"CI8x8-360p",
+            #"CI16x16-360p",
+            #"CV4x8x8-360p",
+            #"DI8x8-360p",
+            #"DI16x16-360p",
+            #"DV4x8x8-360p",
+            #"DV8x8x8",
         ],  # Download all by default
         choices=[
             "CV8x8x8-720p",
@@ -114,14 +116,15 @@ def main(args) -> None:
 
     # Mapping from size argument to Hugging Face repository name
     model_map = {
-        "CV8x8x8-720p": "Cosmos-Tokenize1-CV8x8x8-720p",
-        "DV8x16x16-720p": "Cosmos-Tokenize1-DV8x16x16-720p",
-        "CI8x8-360p": "Cosmos-Tokenize1-CI8x8-360p",
-        "CI16x16-360p": "Cosmos-Tokenize1-CI16x16-360p",
-        "CV4x8x8-360p": "Cosmos-Tokenize1-CV4x8x8-360p",
-        "DI8x8-360p": "Cosmos-Tokenize1-DI8x8-360p",
-        "DI16x16-360p": "Cosmos-Tokenize1-DI16x16-360p",
-        "DV4x8x8-360p": "Cosmos-Tokenize1-DV4x8x8-360p",
+        "DV8x8x8": "Cosmos-Tokenizer-DV8x8x8",
+        #"CV8x8x8-720p": "Cosmos-Tokenize1-CV8x8x8-720p",
+        #"DV8x16x16-720p": "Cosmos-Tokenize1-DV8x16x16-720p",
+        #"CI8x8-360p": "Cosmos-Tokenize1-CI8x8-360p",
+        #"CI16x16-360p": "Cosmos-Tokenize1-CI16x16-360p",
+        #"CV4x8x8-360p": "Cosmos-Tokenize1-CV4x8x8-360p",
+        #"DI8x8-360p": "Cosmos-Tokenize1-DI8x8-360p",
+        #"DI16x16-360p": "Cosmos-Tokenize1-DI16x16-360p",
+        #"DV4x8x8-360p": "Cosmos-Tokenize1-DV4x8x8-360p",
     }
 
     # Create local checkpoints folder

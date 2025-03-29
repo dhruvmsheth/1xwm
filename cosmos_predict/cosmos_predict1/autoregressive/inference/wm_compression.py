@@ -32,6 +32,7 @@ def parse_args():
         type=str,
         default="Cosmos-Predict1-4B",
     )
+    parser.add_argument("--enable_tokenizer", action="store_true", help="Enable the tokenizer")
     parser.add_argument("--input_type", type=str, default="video", help="Type of input", choices=["image", "video", "tokens"])
     parser.add_argument("--only_eval", action="store_true", help="calculate cross-entropy across entire dataset")
 
@@ -84,6 +85,7 @@ def main(args):
         offload_tokenizer=args.offload_tokenizer,
         disable_guardrail=args.disable_guardrail,
         parallel_size=args.num_gpus,
+        enable_tokenizer=args.enable_tokenizer,
     )
 
     # for single video, this is dict with just one key-value pair
@@ -111,35 +113,53 @@ def main(args):
         # this is the video tensor of shape (1, NUM_TOTAL_FRAMES, 3, H, W)
         # Generate video
     log.info(f"Run with image or video path: {args.input_tokens_dir}")
-    out_vid = pipeline.generate(
-        inp_vid=input_videos,
-        num_input_frames=args.num_input_frames,
-        seed=args.seed,
-        sampling_config=sampling_config,
-        token_map=token_map,
-        only_eval=args.only_eval
-    )
-    if out_vid is None and not args.only_eval:
-        log.critical("Guardrail blocked base generation.")
-    elif out_vid is None and args.only_eval:
-        log.info("Done with evaluation!")
+    data_tokens, token_boundaries = pipeline.load_tokens(token_map)
+    print(f"data_tokens shape: {data_tokens.shape}")
 
-    # Save video
-    if not args.only_eval:
+    for i in range(data_tokens.shape[0]):
+        print("Processing sample: ", i)
+        data_token_cur_batch = data_tokens[i]
+        token_boundary_cur_batch = token_boundaries["video"][i]
+
+        out_vid, ce_loss = pipeline.generate(
+            inp_vid=input_videos,
+            num_input_frames=args.num_input_frames,
+            seed=args.seed,
+            sampling_config=sampling_config,
+            data_token=data_token_cur_batch,
+            token_boundary=token_boundary_cur_batch,
+            only_eval=args.only_eval
+        )
+        if out_vid is None and not args.only_eval:
+            log.critical("Guardrail blocked base generation.")
+        elif out_vid is None and args.only_eval:
+            log.info("Done with evaluation!")
+
+        # Save video
         if args.input_image_or_video_path:
-            out_vid_path = os.path.join(args.video_save_folder, f"{args.video_save_name}.mp4")
+            out_vid_path = os.path.join(args.video_save_folder, f"sample_{i}.mp4")
+            out_ce_loss_path = os.path.join(args.video_save_folder, f"sample_{i}_ce_loss.txt")
         else:
-            out_vid_path = os.path.join(args.video_save_folder, f"{args.video_save_name}_image.mp4")
-
-        imageio.mimsave(out_vid_path, out_vid, fps=25)
+            out_vid_path = os.path.join(args.video_save_folder, f"sample_{i}_image.mp4")
+            out_ce_loss_path = os.path.join(args.video_save_folder, f"sample_{i}_ce_loss_image.txt")
+        # expected out_vid shape: (1, 17, 256, 256, 3)
+        # Convert out_vid to list of numpy arrays
+        out_vid_list = [frame for frame in out_vid[0]]
+        imageio.mimsave(out_vid_path, out_vid_list, fps=30)
         log.info(f"Saved video to {out_vid_path}")
 
-    # clean up properly distributed
-    if args.num_gpus > 1:
-        parallel_state.destroy_model_parallel()
-        import torch.distributed as dist
+        with open(out_ce_loss_path, "w") as f:
+            f.write(f"CE loss: {ce_loss}")
+        print(f"Saved CE loss {ce_loss} to {out_ce_loss_path}")
+        print("--------------------------------")
+        print("--------------------------------")
 
-        dist.destroy_process_group()
+        # clean up properly distributed
+        if args.num_gpus > 1:
+            parallel_state.destroy_model_parallel()
+            import torch.distributed as dist
+
+            dist.destroy_process_group()
 
 
 if __name__ == "__main__":

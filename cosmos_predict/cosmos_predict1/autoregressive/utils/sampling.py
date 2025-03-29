@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 import torch
 from torch.nn.attention import SDPBackend, sdpa_kernel
@@ -110,35 +110,43 @@ def prefill(
     temperature: float = 1.0,
     top_k: Optional[int] = None,
     top_p: Optional[float] = None,
+    eval_only: bool = False,
     **kwargs,
-) -> torch.Tensor:
+) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """
-    Prefill stage of the model. This helps us get the logits for the next token. Why? Because we need to know the probability distribution of the next token to sample from it.
+    Prefill stage of the model. This helps us get the logits for the next token.
+    
     Args:
         model: Transformer class instance
         input_pos: tensor of shape (1,) containing the position of the next token to be generated
         tokens: tensor of shape (1, 0) containing the tokens to be used as context for the video generation
-        token_embeddings: tensor of shape (1, 0, 768) containing the token embeddings for the tokens to be used as context for the video generation
+        token_embeddings: tensor of shape (1, 0, 768) containing the token embeddings 
         temperature: temperature for sampling
         top_k: top-k for sampling
         top_p: top-p for sampling
+        eval_only: whether to return logits along with the next token
+    
+    Returns:
+        If eval_only=False: torch.Tensor of shape (batch_size, 1) containing the next token
+        If eval_only=True: Tuple of (next_token, logits)
     """
-    # Transformer class instance has a forward method that takes in tokens, token_embeddings, input_pos, and **kwargs
-    # **kwargs is a dictionary that contains the arguments for the forward method
-    # in our case, **kwargs is empty
+    # Get logits from the model
     logits = model(tokens=tokens, token_embeddings=token_embeddings, input_pos=input_pos, **kwargs)
+    
     # Only top-p or top-k can be provided
     assert (
         top_p is None or top_k is None
     ), "Only one of top-p or top-k can be provided, got top-p={top_p} and top-k={top_k}"
     if top_p is not None:
-        # Returns:
-        # torch.Tensor: Sampled token indices.
-        return sample_top_p(logits, temperature=temperature, top_p=top_p)[0] # first token index highest top-p probability
+        next_token = sample_top_p(logits, temperature=temperature, top_p=top_p)[0]
     else:
-        # Returns:
-        # torch.Tensor: Sampled token indices.
-        return sample_top_k(logits, temperature=temperature, top_k=top_k)[0]
+        next_token = sample_top_k(logits, temperature=temperature, top_k=top_k)[0]
+    
+    # Return with or without logits based on eval_only flag
+    if eval_only:
+        return next_token, logits
+    else:
+        return next_token
 
 
 def decode_one_token(
@@ -148,16 +156,26 @@ def decode_one_token(
     temperature: float = 1.0,
     top_k: Optional[int] = None,
     top_p: Optional[float] = None,
+    eval_only: bool = False,
     **kwargs,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> Tuple[torch.Tensor, torch.Tensor] | Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Decode a single token from the autoregressive model.
     """
     logits = model(tokens=tokens, input_pos=input_pos, **kwargs)
-    if top_p is not None:
-        return sample_top_p(logits, temperature=temperature, top_p=top_p)
+    
+    if not eval_only:
+        if top_p is not None:
+            return sample_top_p(logits, temperature=temperature, top_p=top_p)
+        else:
+            return sample_top_k(logits, temperature=temperature, top_k=top_k)
     else:
-        return sample_top_k(logits, temperature=temperature, top_k=top_k)
+        # When eval_only=True, return logits along with sampled tokens and probabilities
+        if top_p is not None:
+            next_token, next_prob = sample_top_p(logits, temperature=temperature, top_p=top_p)
+        else:
+            next_token, next_prob = sample_top_k(logits, temperature=temperature, top_k=top_k)
+        return logits, next_token, next_prob
 
 
 def decode_n_tokens(
@@ -171,6 +189,7 @@ def decode_n_tokens(
     top_k: Optional[int] = None,
     return_probs: bool = False,
     decode_one_token_function=decode_one_token,
+    eval_only: bool = False,
     **kwargs,
 ):
     """
@@ -178,6 +197,8 @@ def decode_n_tokens(
     Adapted from https://github.com/pytorch-labs/gpt-fast/blob/main/generate.py
     """
     new_tokens, new_probs = [], []
+    all_logits = []  # Store all logits when in eval_only mode
+    
     batch_size = cur_token.shape[0]
     assert (
         top_p is None or top_k is None
@@ -185,29 +206,60 @@ def decode_n_tokens(
     if stop_tokens is not None:
         # Indicator for whether the EOS token (stop token) has been reached for each sample in the batch
         eos_reached = torch.tensor([False] * batch_size, device="cuda")
+    
     for t in range(num_new_tokens):
         with sdpa_kernel([SDPBackend.MATH]):  # Actually better for Inductor to codegen attention here
-            next_token, next_prob = decode_one_token_function(
-                model,
-                tokens=cur_token,
-                input_pos=input_pos,
-                temperature=temperature,
-                top_k=top_k,
-                top_p=top_p,
-                **kwargs,
-            )
-            #print(f"next_token: {next_token}")
+            if not eval_only:
+                next_token, next_prob = decode_one_token_function(
+                    model,
+                    tokens=cur_token,
+                    input_pos=input_pos,
+                    temperature=temperature,
+                    top_k=top_k,
+                    top_p=top_p,
+                    **kwargs,
+                )
+            else:
+                logits, next_token, next_prob = decode_one_token_function(
+                    model,
+                    tokens=cur_token,
+                    input_pos=input_pos,
+                    temperature=temperature,
+                    top_k=top_k,
+                    top_p=top_p,
+                    eval_only=eval_only,
+                    **kwargs,
+                )
+                # Store logits for each step
+                all_logits.append(logits.clone())
+                
             input_pos += 1
             if stop_tokens is not None and len(stop_tokens) > 0:
                 eos_reached = eos_reached | (torch.isin(next_token, stop_tokens))
                 if eos_reached.all():
                     break
+                    
             new_tokens.append(next_token.clone())
             if return_probs:
                 new_probs.append(next_prob.clone())
             cur_token = next_token.clone()
-
-    if return_probs:
-        return new_tokens, new_probs
+    
+    # Stack all collected logits along sequence dimension
+    if eval_only and all_logits:
+        stacked_logits = torch.stack(all_logits, dim=1)
     else:
-        return new_tokens
+        # Create empty tensor if no logits were collected
+        stacked_logits = torch.zeros((batch_size, 0, model.config.vocab_size), 
+                                     device=cur_token.device)
+    
+    # IMPORTANT: Always return new_tokens as a list so it can be concatenated
+    if not eval_only:
+        if return_probs:
+            return new_tokens, new_probs
+        else:
+            return new_tokens
+    else:
+        if return_probs:
+            return new_tokens, new_probs, stacked_logits
+        else:
+            return new_tokens, stacked_logits

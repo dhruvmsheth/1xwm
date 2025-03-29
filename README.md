@@ -173,6 +173,10 @@ Email challenge@1x.tech with your requests (and why you think the data is import
 
 We also welcome donors to help us increase the bounty.
 
+## Run the following:
+```
+$ CUDA_HOME=$CONDA_PREFIX PYTHONPATH=$(pwd) python cosmos_predict1/autoregressive/inference/wm_compression.py     --checkpoint_dir checkpoints     --ar_model_dir Cosmos-Predict1-4B     --input_type tokens --input_tokens_dir /workspace/data/val_v2.0/     --top_p 0.8     --temperature 1.0    --video_save_name
+```
 
 ## Citation
 

@@ -17,6 +17,7 @@ import gc
 import json
 import math
 import os
+from pathlib import Path
 from typing import List, Optional, Tuple
 from collections import defaultdict
 
@@ -51,6 +52,8 @@ from cosmos_predict1.diffusion.inference.inference_utils import (
 from cosmos_predict1.utils import log, misc
 from cosmos_predict1.utils.base_world_generation_pipeline import BaseWorldGenerationPipeline
 
+from cosmos_tokenizer.utils import tensor2numpy
+from cosmos_tokenizer.video_lib import CausalVideoTokenizer
 
 def detect_model_size_from_ckpt_path(ckpt_path: str) -> str:
     """Detect model size from checkpoint path.
@@ -86,6 +89,7 @@ def create_inference_config(
     parallel_size: int = 4,
     batch_size: int = 1,
     inference_type: str = "base",
+    enable_tokenizer: bool = False,
 ) -> InferenceConfig:
     """Create inference configuration for model.
 
@@ -135,6 +139,7 @@ def create_inference_config(
         batch_size=batch_size,
         video_height=INPUTS["VIDEO_HEIGHT_I"],
         video_width=INPUTS["VIDEO_WIDTH_I"],
+        enable_tokenizer=True,
         **kwargs,
     )
 
@@ -185,6 +190,7 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
         offload_diffusion_decoder: bool = False,
         disable_guardrail: bool = False,
         parallel_size: int = 1,
+        enable_tokenizer: bool = False,
     ):
         """Initialize the autoregressive world generation pipeline.
 
@@ -212,13 +218,14 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
         model_size = detect_model_size_from_ckpt_path(checkpoint_name)
         model_ckpt_path = os.path.join(checkpoint_dir, checkpoint_name, "model.pt")
         tokenizer_ckpt_path = os.path.join(checkpoint_dir, "Cosmos-Tokenize1-DV8x16x16-720p/ema.jit")
-
+        print(f"tokenizer_ckpt_path: {tokenizer_ckpt_path}")
         inference_config: InferenceConfig = create_inference_config(
             model_ckpt_path=model_ckpt_path,
             tokenizer_ckpt_path=tokenizer_ckpt_path,
             model_size=model_size,
             parallel_size=parallel_size,
             inference_type=inference_type,
+            enable_tokenizer=enable_tokenizer,
         )
 
         self.inference_config = inference_config
@@ -355,7 +362,8 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
         num_input_frames: int, 
         seed: int, 
         sampling_config: SamplingConfig,
-        token_map: dict[str, str],
+        data_token: torch.Tensor,
+        token_boundary: dict,
         only_eval: bool = False,
     ) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
         """Run the autoregressive model to generate video tokens.
@@ -368,7 +376,8 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
             num_input_frames (int): Number of context frames to use from input. The tensor shape should be (B x T x 3 x H x W).
             seed (int): Random seed for generation
             sampling_config (SamplingConfig): Configuration for sampling parameters
-            token_map (dict[str, str]): Dictionary containing token paths
+            data_token (torch.Tensor): Data token tensor of shape (B x T x H x W)
+            token_boundary (dict): Token boundary tensor of shape (B x T)
             only_eval (bool): Whether to only evaluate the model
 
         Returns:
@@ -380,15 +389,16 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
         """
         # Choosing the context length from list of available contexts
         # @NOTE:
-        out_videos_cur_batch, indices_tensor_cur_batch = self._run_model(
-            inp_vid, num_input_frames, seed, sampling_config, token_map=token_map, only_eval=only_eval
+
+        out_videos_cur_batch, indices_tensor_cur_batch, ce_loss = self._run_model(
+            inp_vid, num_input_frames, seed, sampling_config, data_token, token_boundary, only_eval=only_eval
         )
 
         if self.offload_network:
             self._offload_network()
         if self.offload_tokenizer:
             self._offload_tokenizer()
-        return out_videos_cur_batch, indices_tensor_cur_batch
+        return out_videos_cur_batch, indices_tensor_cur_batch, ce_loss
 
     def _run_model(
         self, 
@@ -396,7 +406,8 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
         num_input_frames: int, 
         seed: int, 
         sampling_config: SamplingConfig,
-        token_map: dict[str, str],
+        data_token: torch.Tensor,
+        token_boundary: dict,
         only_eval: bool = False,
     ) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
         """Run the autoregressive model to generate video tokens.
@@ -430,7 +441,8 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
         # the largest supported length that doesn't exceed the provided num_input_frames.
         # For each valid context length, it increments the latent_context_t_size by 1.
         # The final context_used value represents the number of frames that will be used from the input video.
-        if not token_map:
+        # add if to check if data_token is None
+        if not torch.is_tensor(data_token):
             latent_context_t_size = 0
             context_used = 0
             for _clen in self._supported_context_len:
@@ -461,8 +473,10 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
         else:
             T, H, W = 3, 32, 32
             self.latent_shape = (T, H, W)
-            avg_ce_loss = self.eval_AR_on_tokens(
-                token_map=token_map,
+
+            ce_loss, decoded_videos, indices_tensors = self.eval_AR_on_tokens(
+                data_token=data_token,
+                token_boundary=token_boundary,
                 latent_shape=self.latent_shape,
                 sampling_config=sampling_config,
                 tokenizer_config=self.tokenizer_config,
@@ -471,11 +485,12 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
                 num_chunks_to_generate=1,
                 seed=seed,
             )
-
+            return decoded_videos, indices_tensors, ce_loss
+        
         if self.parallel_size > 1:
             parallel_state.destroy_model_parallel()
 
-        return None, None
+        return decoded_videos, indices_tensors, avg_ce_loss
     
     def _run_diffusion_decoder(
         self,
@@ -545,7 +560,8 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
         sampling_config: SamplingConfig,
         num_input_frames: int = 9,
         seed: int = 0,
-        token_map: dict[str, str] = None,
+        data_token: torch.Tensor = None,
+        token_boundary: dict = None,
         only_eval: bool = False,
     ) -> np.ndarray | None:
         """Generate a video continuation from input frames.
@@ -569,10 +585,11 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
         """
         log.info("Run generation")
         # @NOTE: (this is where the AR generation happens)
-        out_videos_cur_batch, indices_tensor_cur_batch = self._run_model_with_offload(
-            inp_vid, num_input_frames, seed, sampling_config, token_map=token_map, only_eval=only_eval
+        out_videos_cur_batch, indices_tensor_cur_batch, ce_loss = self._run_model_with_offload(
+            inp_vid, num_input_frames, seed, sampling_config, data_token, token_boundary, only_eval=only_eval
         )
         log.info("Finish AR model generation")
+
         if not only_eval:
             print(f"shape of out_videos_cur_batch: {out_videos_cur_batch[0].shape}")
             print(f"shape of indices_tensor_cur_batch: {indices_tensor_cur_batch[0].shape}")
@@ -597,7 +614,7 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
             return output_video
         else:
             # this would be none since only_eval is True
-            return None
+            return out_videos_cur_batch, ce_loss
 
     @torch.inference_mode()
     def generate_partial_tokens_from_data_batch(
@@ -610,6 +627,7 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
         task_condition: str,
         num_chunks_to_generate: int = 1,
         seed: int = 0,
+        eval_only: bool = False,
     ) -> tuple[List[torch.Tensor], List[torch.Tensor], List[torch.Tensor], List[torch.Tensor]]:
         """Generate video tokens from partial input tokens with conditioning.
 
@@ -627,6 +645,7 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
             task_condition: Type of generation task ('video' or 'text_and_video')
             num_chunks_to_generate: Number of chunks to generate (default: 1)
             seed: Random seed for generation (default: 0)
+            eval_only: Whether to only evaluate the model
 
         Returns:
             tuple containing:
@@ -793,29 +812,43 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
         
         return flatten_tokens.detach().clone(), token_boundaries
 
-    def ce_tokens(self, generated_tokens: torch.Tensor, ground_truth_tokens: torch.Tensor) -> float:
+    def ce_tokens(self, logits: torch.Tensor, ground_truth_tokens: torch.Tensor) -> float:
         """
-        Calculate cross entropy loss between generated and ground truth tokens.
+        Calculate cross entropy loss between logits and ground truth tokens.
         
         Args:
-            generated_tokens (torch.Tensor): Generated tokens of shape (32*32,)
-            ground_truth_tokens (torch.Tensor): Ground truth tokens of shape (32*32,)
-
+            logits (torch.Tensor): Logits of shape (batch, seq_len, vocab_size) or (seq_len, vocab_size)
+            ground_truth_tokens (torch.Tensor): Ground truth tokens of shape (seq_len,)
+            
         Returns:
             float: Cross entropy loss
         """
-        num_classes = 64000
-        # Reshape predictions to (batch_size, num_classes)
-        predictions = F.one_hot(generated_tokens, num_classes=num_classes).float()
+        # Ensure correct reshaping based on tensor dimensions
+        if logits.dim() == 3:  # [batch, seq_len, vocab_size]
+            # For our case, batch is typically 1, so we need to:
+            # 1. Remove the batch dimension from logits
+            # 2. Make sure tokens match the sequence dimension
+            logits = logits.squeeze(0)  # Remove batch dim -> [seq_len, vocab_size]
+            
+            # Now ground_truth_tokens should be [seq_len]
+            if ground_truth_tokens.size(0) != logits.size(0):
+                raise ValueError(f"Mismatch in sequence length: logits {logits.size(0)} vs tokens {ground_truth_tokens.size(0)}")
         
-        criterion = nn.CrossEntropyLoss()
-        loss = criterion(predictions, ground_truth_tokens)
-        return loss
+        # Ensure types are correct
+        ground_truth_tokens = ground_truth_tokens.to(
+            device=logits.device, 
+            dtype=torch.long
+        )
+        
+        # Compute loss - our logits are now [seq_len, vocab_size] and ground_truth is [seq_len]
+        # Each position is treated as an independent prediction
+        return F.cross_entropy(logits, ground_truth_tokens).item()
 
     @torch.inference_mode()
     def eval_AR_on_tokens(
         self,
-        token_map: dict[str, str],
+        data_token: torch.Tensor,
+        token_boundary: dict,
         latent_shape: list[int],
         sampling_config: SamplingConfig,
         tokenizer_config: TokenizerConfig,
@@ -823,25 +856,27 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
         task_condition: str,
         num_chunks_to_generate: int = 1,
         seed: int = 0,
-    ) -> tuple[List[torch.Tensor], List[torch.Tensor], List[torch.Tensor], List[torch.Tensor]]:
-        """Only handles video generation from input tokens. 
-
-        Handles decoding process:
-        1. Processes input batch and applies conditioning
-        2. Decodes tokens to video frames
-
+        num_samples: int = 2,
+        save_path: str = None,
+    ) -> tuple[float, List[torch.Tensor]]:
+        """
+        Evaluate autoregressive model on tokens and optionally decode generated tokens into videos.
+        
         Args:
-            token_map (dict[str, str]): Dictionary containing token mappings
-            only_eval (bool): Whether to only run evaluation without generation
-            task_condition (str): Type of task condition to apply
-            seed (int, optional): Random seed for generation. Defaults to 0.
-
+            data_token: Data token tensor
+            token_boundary: Token boundary tensor
+            sampling_config: Configuration for sampling
+            latent_shape: Shape of latent space
+            tokenizer_config: Configuration for tokenizer
+            only_eval: Whether to only evaluate
+            task_condition: Task condition
+            num_chunks_to_generate: Number of chunks to generate
+            seed: Random seed
+            num_samples: Number of samples to evaluate
+            save_path: Path to save generated videos (optional)
+            
         Returns:
-            tuple containing:
-                - List[torch.Tensor]: Generated videos
-                - List[torch.Tensor]: Input videos
-                - List[torch.Tensor]: Generated tokens
-                - List[torch.Tensor]: Token index tensors
+            tuple: (average CE loss, list of decoded videos)
         """
         log.debug(f"Starting evaluation with seed {seed}")
 
@@ -852,6 +887,7 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
         # would be 0
         video_token_start = tokenizer_config.video_tokenizer.tokenizer_offset
         # would be 64000
+
         video_vocab_size = tokenizer_config.video_tokenizer.vocab_size
         video_token_end = video_token_start + video_vocab_size
 
@@ -859,12 +895,13 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
 
         assert logit_clipping_range == [
             0,
-            self.model.tokenizer.video_vocab_size,
+            video_vocab_size,
         ], f"logit_clipping_range {logit_clipping_range} is not supported for fast generate. Expected [0, {self.model.tokenizer.video_vocab_size}]"
 
         out_videos = {}
         out_indices_tensors = {}
 
+        print(f"tokenizer check: {self.model.tokenizer}")
         num_eov_tokens = 1 if self.model.tokenizer.tokenizer_config.add_special_tokens else 0
         num_bov_tokens = 1 if self.model.tokenizer.tokenizer_config.add_special_tokens else 0
 
@@ -886,10 +923,10 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
         # data_tokens, token_boundaries = self.model.tokenizer.tokenize(data_batch=data_batch)
         
         # Instead, get both from your load_tokens method
-        data_tokens, token_boundaries = self.load_tokens(token_map)
-        
+        #print(f"token_boundaries: {token_boundaries}")
+        # checks for data_tokens and token_boundaries
         if parallel_state.get_context_parallel_world_size() > 1:
-            data_tokens = get_batch_on_this_cp_rank(data_tokens)
+            data_token = get_batch_on_this_cp_rank(data_token)
         ######################### TOKENIZATION happens here #########################
 
         # for our case:
@@ -898,50 +935,118 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
         # token_boundaries: dict_keys(['video'])
         # this is because only 1 video exists and there are 23040 tokens in the video
         # why 23040? 
-        print(f"data_tokens shape: {data_tokens.shape}")
-        batch_size = data_tokens.shape[0]
-        print(f"batch_size: {batch_size}")
-        print(f"token_boundaries: {token_boundaries.keys()}")
+        print(f"data_tokens shape: {data_token.shape}")
+        print(f"token_boundaries: {len(token_boundary)}")
         ce_losses = []
-        # NOTE: again, batch_size is 1 for our case
-        for sample_num in range(batch_size):
-            # torch.Size([1, 3 * 32 *32])
-            ground_truth_tokens = data_tokens[sample_num]
-            input_tokens = data_tokens[sample_num][0 : token_boundaries["video"][sample_num][1]]  # [B, L]
-            num_tokens_to_generate = data_tokens[sample_num].shape[0] - token_boundaries["video"][sample_num][1]
-            input_tokens_list = [input_tokens.tolist()]  # -1 is to exclude eov token
-            log.debug(
-                f"Run sampling. # input condition tokens: {len(input_tokens[0])}; # generate tokens: {num_tokens_to_generate + num_eov_tokens}; "
-                f"full length of the data tokens: {len(data_tokens[sample_num])}: {data_tokens[sample_num]}"
-            )
-            # video_start_boundary is the index of the first video token
-            video_start_boundary = token_boundaries["video"][sample_num][0] + num_bov_tokens
+        decoded_videos = []
+        indices_tensors = []
+        
+        ground_truth_tokens = data_token
+        print(f"ground_truth_tokens shape: {ground_truth_tokens.shape}")
+        input_tokens = data_token[0 : token_boundary[1]]  # [B, L]
+        print(f"input_tokens shape: {input_tokens.shape}")
+        num_tokens_to_generate = data_token.shape[0] - token_boundary[1]
+        input_tokens_list = [input_tokens.tolist()]  # -1 is to exclude eov token
+        log.debug(
+            f"Run sampling. # input condition tokens: {len(input_tokens_list[0])}; # generate tokens: {num_tokens_to_generate + num_eov_tokens}; "
+            f"full length of the data tokens: {len(data_token)}: {data_token}"
+        )
+        # video_start_boundary is the index of the first video token
+        video_start_boundary = token_boundary[0] + num_bov_tokens
 
-            # context and context_mask are None in our case but for the text models, there is context
-            # torch.Size([1, 32*32])
-            generated_tokens = self._generate_tokens(
-                prompt_tokens=input_tokens_list,
-                latent_shape=latent_shape,
-                video_start_boundary=video_start_boundary,
-                max_gen_len=num_tokens_to_generate,
-                sampling_config=sampling_config,
-                logit_clipping_range=logit_clipping_range,
-                seed=seed,
-                context=context,
-                context_mask=context_mask,
-            )  
-            ground_truth_future_tokens = ground_truth_tokens[len(input_tokens):].reshape(-1)  # Reshape to (32*32,)
-            generated_future_tokens = generated_tokens[0, len(input_tokens):].reshape(-1)  # Remove batch dim and reshape
-            ce_loss = self.ce_tokens(generated_future_tokens, ground_truth_future_tokens)
-            print(f"ce_loss for sample {sample_num}: {ce_loss}")
-            ce_losses.append(ce_loss)
+        # context and context_mask are None in our case but for the text models, there is context
+        # torch.Size([1, 32*32])
+        generated_tokens, generation_logits = self._generate_tokens(
+            prompt_tokens=input_tokens_list,
+            latent_shape=latent_shape,
+            video_start_boundary=video_start_boundary,
+            max_gen_len=num_tokens_to_generate,
+            sampling_config=sampling_config,
+            logit_clipping_range=logit_clipping_range,
+            seed=seed,
+            context=context,
+            context_mask=context_mask,
+            eval_only=only_eval,
+        )  
+        ground_truth_future_tokens = ground_truth_tokens[len(input_tokens):].reshape(-1)  # Reshape to (32*32,)
+        generated_future_tokens = generated_tokens[0, len(input_tokens):].reshape(-1)  # Remove batch dim and reshape
 
-        # TODO: 
-        # average the ce_loss over all samples
-        # return the average ce_loss
-        avg_ce_loss = sum(ce_losses) / len(ce_losses)
-        print(f"avg_ce_loss: {avg_ce_loss}")
-        return avg_ce_loss
+        # Extract the relevant logits - important change here
+        future_logits = generation_logits[0, :ground_truth_future_tokens.size(0), :]  # Remove batch dim -> [seq_len, vocab_size]
+        
+        ce_loss = self.ce_tokens(future_logits, ground_truth_future_tokens)
+        print(f"CE loss: {ce_loss}")
+
+        # Reshape tokens to the format expected by the decoder
+        # Expected format: [B, T, H, W]
+        # --------- DECODING happens here ---------
+        decoder_path = Path("checkpoints") / "Cosmos-Tokenizer-DV8x8x8" / "decoder.jit"
+        try:
+            decoder = CausalVideoTokenizer(checkpoint_dec=str(decoder_path))
+            if decoder._dec_model is None:
+                raise RuntimeError(f"Failed to load decoder model from {decoder_path}")
+            print("Decoder initialized successfully.")
+        except Exception as e:
+            raise RuntimeError(f"Error loading decoder: {str(e)}") from e 
+        
+        T, H, W = latent_shape
+        
+        # Use the full sequence of tokens (ground truth + generated)
+        # First reshape to batch dimension
+        indices_tensor = generated_tokens.reshape(1, -1)  # [1, full_sequence_length]
+        print(f"Full indices tensor shape before reshape: {indices_tensor.shape}")
+        
+        # Rearrange as seen in the provided code - handle the full sequence
+        from einops import rearrange
+        
+        # Calculate total number of frames
+        total_latent_shape = indices_tensor.shape[1] // (H * W)
+        print(f"Total latent temporal length: {total_latent_shape}")
+        
+        # Reshape to [B, T, H, W] format
+        indices_tensor = rearrange(
+            indices_tensor,
+            "B (T H W) -> B T H W",
+            T=total_latent_shape,
+            H=H,
+            W=W,
+        )
+        print(f"Indices tensor shape after reshape: {indices_tensor.shape}")
+        
+        # Apply offset if needed for logit clipping
+        if len(logit_clipping_range) > 0:
+            indices_tensor = indices_tensor - logit_clipping_range[0]
+        
+        # Use the CausalVideoTokenizer directly for decoding
+        indices_tensor_cuda = indices_tensor.cuda()
+        with torch.no_grad():
+            # Decode tokens to video frames
+            video_decoded = decoder.decode(indices_tensor_cuda)
+            
+            # Normalize from [-1, 1] to [0, 1]
+            video_decoded = (video_decoded * 0.5 + 0.5).clamp_(0, 1)
+            
+            # Convert tensor to CPU and float32 for numpy conversion
+            video_decoded_cpu = video_decoded.cpu().float()  # Convert to float32
+            
+            # Expected format after decoding: [1, 3, T, H, W]
+            # Convert to numpy with correct dimension ordering for imageio
+            video_frames = []
+            for t in range(video_decoded_cpu.shape[2]):  # Iterate over time dimension
+                # Get frame at time t, convert to numpy
+                frame = video_decoded_cpu[0, :, t, :, :].permute(1, 2, 0).numpy()  # [H, W, 3]
+                # Scale to 0-255 for imageio
+                frame = (frame * 255).astype(np.uint8)
+                video_frames.append(frame)
+            
+            # Store for return - ensure we keep the same shape and format
+            decoded_videos.append(video_frames)  # List of numpy arrays
+            indices_tensors.append(indices_tensor.cpu())  # CPU tensor
+        # Decoded video shape: 17 frames of shape (256, 256, 3)
+        print(f"Decoded video shape: {len(video_frames)} frames of shape {video_frames[0].shape}")
+        # video_frames shape (17, 256, 256, 3)
+        # decoded_videos shape (1, 17, 256, 256, 3)
+        return ce_loss, decoded_videos, indices_tensors
 
     def _generate_tokens(
         self,
@@ -954,7 +1059,8 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
         seed: int = 0,
         context: Optional[torch.Tensor] = None,
         context_mask: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        eval_only: bool = False,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         r"""
         Function to generate video from input tokens. These input tokens can be initial text tokens (in case of text to video),
         or partial ground truth tokens.
@@ -989,32 +1095,41 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
         stop_tokens = self.model.tokenizer.stop_tokens
 
         # using a llama AR model instance for generation
-        generation_tokens, _ = self.model.generate(
-            prompt_tokens=prompt_tokens,
-            temperature=sampling_config.temperature,
-            top_p=sampling_config.top_p,
-            echo=sampling_config.echo,
-            seed=seed,
-            context=context,
-            context_mask=context_mask,
-            max_gen_len=max_gen_len,
-            compile_sampling=sampling_config.compile_sampling,
-            compile_prefill=sampling_config.compile_prefill,
-            stop_tokens=stop_tokens,
-            verbose=True,
-        )
-        generation_tokens = generation_tokens[:, video_start_boundary:]
-        # Combine the tokens and do padding, sometimes the generated tokens end before the max_gen_len
-        if generation_tokens.shape[1] < total_seq_len:
-            log.warning(
-                f"Generated video tokens (shape:{generation_tokens.shape}) shorted than expected {total_seq_len}. Could be the model produce end token early. Repeat the last token to fill the sequence in order for decoding."
+        if not eval_only:
+            generation_tokens, _ = self.model.generate(
+                prompt_tokens=prompt_tokens,
+                temperature=sampling_config.temperature,
+                top_p=sampling_config.top_p,
+                echo=sampling_config.echo,
+                seed=seed,
+                context=context,
+                context_mask=context_mask,
+                max_gen_len=max_gen_len,
+                compile_sampling=sampling_config.compile_sampling,
+                compile_prefill=sampling_config.compile_prefill,
+                stop_tokens=stop_tokens,
+                verbose=True,
             )
-            padding_len = total_seq_len - generation_tokens.shape[1]
-            padding_tokens = generation_tokens[:, [-1]].repeat(1, padding_len)
-            generation_tokens = torch.cat([generation_tokens, padding_tokens], dim=1)
-
-        # returns generated tokens with prompt tokens
-        return generation_tokens
+            return generation_tokens
+        else:
+            generation_tokens, generation_logits = self.model.generate(
+                prompt_tokens=prompt_tokens,
+                temperature=sampling_config.temperature,
+                top_p=sampling_config.top_p,
+                echo=sampling_config.echo,
+                seed=seed,
+                context=context,
+                context_mask=context_mask,
+                max_gen_len=max_gen_len,
+                compile_sampling=sampling_config.compile_sampling,
+                compile_prefill=sampling_config.compile_prefill,
+                stop_tokens=stop_tokens,
+                verbose=True,
+                eval_only=True,
+            )
+            print(f"generation_tokens shape: {generation_tokens.shape}")
+            print(f"generation_logits shape: {generation_logits.shape}")
+            return generation_tokens, generation_logits
 
     def generate_video_from_tokens(
         self,
