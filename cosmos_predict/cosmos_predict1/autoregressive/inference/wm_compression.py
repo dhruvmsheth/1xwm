@@ -136,12 +136,16 @@ def main(args):
             log.info("Done with evaluation!")
 
         # Save video
+        # mkdir generated_videos and generated_loss
+        os.makedirs(args.video_save_folder, exist_ok=True)
+        os.makedirs(os.path.join(args.video_save_folder, "generated_videos"), exist_ok=True)
+        os.makedirs(os.path.join(args.video_save_folder, "generated_loss"), exist_ok=True)
         if args.input_image_or_video_path:
             out_vid_path = os.path.join(args.video_save_folder, f"sample_{i}.mp4")
             out_ce_loss_path = os.path.join(args.video_save_folder, f"sample_{i}_ce_loss.txt")
         else:
-            out_vid_path = os.path.join(args.video_save_folder, f"sample_{i}_image.mp4")
-            out_ce_loss_path = os.path.join(args.video_save_folder, f"sample_{i}_ce_loss_image.txt")
+            out_vid_path = os.path.join(args.video_save_folder, "generated_videos", f"sample_{i}_image.mp4")
+            out_ce_loss_path = os.path.join(args.video_save_folder, "generated_loss", f"sample_{i}_ce_loss_image.txt")
         # expected out_vid shape: (1, 17, 256, 256, 3)
         # Convert out_vid to list of numpy arrays
         out_vid_list = [frame for frame in out_vid[0]]

@@ -991,7 +991,7 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
         
         T, H, W = latent_shape
         
-        # Use the full sequence of tokens (ground truth + generated)
+        # DECODE GENERATED TOKENS
         # First reshape to batch dimension
         indices_tensor = generated_tokens.reshape(1, -1)  # [1, full_sequence_length]
         print(f"Full indices tensor shape before reshape: {indices_tensor.shape}")
@@ -1031,21 +1031,71 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
             
             # Expected format after decoding: [1, 3, T, H, W]
             # Convert to numpy with correct dimension ordering for imageio
-            video_frames = []
+            video_frames_generated = []
             for t in range(video_decoded_cpu.shape[2]):  # Iterate over time dimension
                 # Get frame at time t, convert to numpy
                 frame = video_decoded_cpu[0, :, t, :, :].permute(1, 2, 0).numpy()  # [H, W, 3]
                 # Scale to 0-255 for imageio
                 frame = (frame * 255).astype(np.uint8)
-                video_frames.append(frame)
+                video_frames_generated.append(frame)
             
-            # Store for return - ensure we keep the same shape and format
-            decoded_videos.append(video_frames)  # List of numpy arrays
-            indices_tensors.append(indices_tensor.cpu())  # CPU tensor
-        # Decoded video shape: 17 frames of shape (256, 256, 3)
-        print(f"Decoded video shape: {len(video_frames)} frames of shape {video_frames[0].shape}")
-        # video_frames shape (17, 256, 256, 3)
-        # decoded_videos shape (1, 17, 256, 256, 3)
+            print(f"Generated video shape: {len(video_frames_generated)} frames of shape {video_frames_generated[0].shape}")
+            
+        # DECODE GROUND TRUTH TOKENS
+        # Same process for ground truth tokens
+        truth_indices_tensor = ground_truth_tokens.reshape(1, -1)  # [1, full_sequence_length]
+        print(f"Ground truth tensor shape before reshape: {truth_indices_tensor.shape}")
+        
+        # Calculate total number of frames for ground truth
+        truth_total_latent_shape = truth_indices_tensor.shape[1] // (H * W)
+        print(f"Ground truth latent temporal length: {truth_total_latent_shape}")
+        
+        # Reshape to [B, T, H, W] format
+        truth_indices_tensor = rearrange(
+            truth_indices_tensor,
+            "B (T H W) -> B T H W",
+            T=truth_total_latent_shape,
+            H=H,
+            W=W,
+        )
+        print(f"Ground truth indices shape after reshape: {truth_indices_tensor.shape}")
+        
+        # Apply offset if needed for logit clipping
+        if len(logit_clipping_range) > 0:
+            truth_indices_tensor = truth_indices_tensor - logit_clipping_range[0]
+        
+        # Decode ground truth tokens
+        truth_indices_tensor_cuda = truth_indices_tensor.cuda()
+        with torch.no_grad():
+            # Decode tokens to video frames
+            truth_video_decoded = decoder.decode(truth_indices_tensor_cuda)
+            
+            # Normalize from [-1, 1] to [0, 1]
+            truth_video_decoded = (truth_video_decoded * 0.5 + 0.5).clamp_(0, 1)
+            
+            # Convert tensor to CPU and float32 for numpy conversion
+            truth_video_decoded_cpu = truth_video_decoded.cpu().float()
+            
+            # Process ground truth frames
+            video_frames_truth = []
+            for t in range(truth_video_decoded_cpu.shape[2]):
+                frame = truth_video_decoded_cpu[0, :, t, :, :].permute(1, 2, 0).numpy()
+                frame = (frame * 255).astype(np.uint8)
+                video_frames_truth.append(frame)
+            
+            print(f"Ground truth video shape: {len(video_frames_truth)} frames of shape {video_frames_truth[0].shape}")
+        
+        # Combine generated and ground truth videos
+        # First decode the generated tokens, then the ground truth tokens
+        video_frames_combined = video_frames_generated + video_frames_truth
+        
+        # Store for return - both the separate videos and the combined sequence
+        decoded_videos = []
+        decoded_videos.append(video_frames_combined)  # Combined video
+        indices_tensors = []
+        indices_tensors.append(indices_tensor.cpu())  # Just keep the generated indices tensor
+        
+        print(f"Combined video contains {len(video_frames_combined)} frames")
         return ce_loss, decoded_videos, indices_tensors
 
     def _generate_tokens(
