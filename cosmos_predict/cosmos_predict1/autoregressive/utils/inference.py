@@ -37,13 +37,13 @@ NUM_TOTAL_FRAMES = 17
 # pixel chunk duration represents the number of frames in each chunk of the video. 
 # num total frames represents the total number of frames in the video
 # num condition latents t means the number of frames in the video that are used as condition for the video generation
-# video height and video width represent the height and width of the video
+# video height and videos width represent the height and width of the video
 INPUTS = {
     "PIXEL_CHUNK_DURATION_I": 17,
     "NUM_TOTAL_FRAMES_I": NUM_TOTAL_FRAMES,
     "NUM_CONDITION_LATENTS_T_I": 1,
-    "VIDEO_HEIGHT_I": 640,
-    "VIDEO_WIDTH_I": 1024,
+    "VIDEO_HEIGHT_I": 256,
+    "VIDEO_WIDTH_I": 256,
 }
 
 

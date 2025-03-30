@@ -169,7 +169,7 @@ class DiscreteMultimodalTokenizer:
     def _tokenize_video(self, videos: torch.Tensor, pixel_chunk_duration: Optional[int] = None):
         r"""Function to tokenize video.
         Args:
-            videos (torch.Tensor): Input video data tensor
+            videos (torch.Tensor): Input video data tensor (contains the last frame in ground truth repeated X times to fill the video)
             pixel_chunk_duration (Optional[float]): Pixel chunk duration. If provided, we pass it to the video tokenizer.
         Returns:
             video_tokens (list[list[int]]): List of video tokens
@@ -181,12 +181,16 @@ class DiscreteMultimodalTokenizer:
         quantized_out, _ = self.video_tokenizer.encode(videos, pixel_chunk_duration=pixel_chunk_duration)
         indices = self.video_tokenizer.fsq_quantizer.codes_to_indices(quantized_out.permute(0, 2, 3, 4, 1))
         print(f"quantized_out shape: {quantized_out.shape}")
+        # shape is (1, 6, 3, 32, 32)
+        # indices out shape is B, T, H, W which is 1, 3, 32, 32
 
         # Flatten the indices
         indices = rearrange(indices, "B T H W -> B (T H W)")
+        # now indices shape is 1, 3*32*32
 
         # tokenizer_offset tells what offset should be added to the tokens.
         # This is needed for vocab expansion.
+        # offset is 0 when no text tokenizer is used
         indices += self.tokenizer_config.video_tokenizer.tokenizer_offset
 
         # Add begin and end of video tokens
@@ -204,6 +208,7 @@ class DiscreteMultimodalTokenizer:
             else:
                 # NOTE:
                 for i in range(batch_size):
+                    # adds the tokens for the entire video, not just the prompt or generated tokens.
                     video_tokens.append(indices[i].tolist())
                     print(f"video_tokens[-1]: {len(video_tokens[-1])}")
                     assert (
@@ -299,9 +304,12 @@ class DiscreteMultimodalTokenizer:
                 # If it's an image dataset, we use a pixel chunk duration of 1
                 pixel_chunk_duration = 1
             tokens_video = self._tokenize_video(data_batch[key], pixel_chunk_duration=pixel_chunk_duration)
+            # returns tokens_video of shape (1, T*H*W) where T is for the entire video, not just prompt
             if len(tokens) == 0:
+                # this would be true if text tokenizer is not used
                 tokens = tokens_video
                 for i in range(batch_size):
+                    # so token boundary that we set is from start of video to end of video
                     token_boundaries["video"].append((0, len(tokens[i])))
                     # [B,] each entry is ((0, len(tokens[i])))
             else:

@@ -130,6 +130,7 @@ def create_inference_config(
         model_ckpt_path=model_ckpt_path,
         tokenizer_ckpt_path=tokenizer_ckpt_path,
         model_size=model_size,
+        compression_ratio=[8, 8, 8],
         tensor_model_parallel_size=parallel_size,
         rope_dim="3D",
         add_special_tokens=False,
@@ -217,7 +218,7 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
         # Create inference config
         model_size = detect_model_size_from_ckpt_path(checkpoint_name)
         model_ckpt_path = os.path.join(checkpoint_dir, checkpoint_name, "model.pt")
-        tokenizer_ckpt_path = os.path.join(checkpoint_dir, "Cosmos-Tokenize1-DV8x16x16-720p/ema.jit")
+        tokenizer_ckpt_path = os.path.join(checkpoint_dir, "Cosmos-0.1-Tokenizer-DV8x8x8/ema.jit")
         print(f"tokenizer_ckpt_path: {tokenizer_ckpt_path}")
         inference_config: InferenceConfig = create_inference_config(
             model_ckpt_path=model_ckpt_path,
@@ -711,13 +712,7 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
         if parallel_state.get_context_parallel_world_size() > 1:
             data_tokens = get_batch_on_this_cp_rank(data_tokens)
         ######################### TOKENIZATION happens here #########################
-
-        # for our case:
-        # data_tokens shape: torch.Size([1, 23040])
-        # batch_size: 1
-        # token_boundaries: dict_keys(['video'])
-        # this is because only 1 video exists and there are 23040 tokens in the video
-        # why 23040? 
+        
         print(f"data_tokens shape: {data_tokens.shape}")
         batch_size = data_tokens.shape[0]
         print(f"batch_size: {batch_size}")
@@ -803,7 +798,7 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
         print(f"flatten_tokens shape: {flatten_tokens.shape}")
 
         tokens_per_t = flatten_tokens.shape[1] // 3  # For 32x32 spatial this would be 1024
-        input_tokens_length = tokens_per_t * 2
+        input_tokens_length = tokens_per_t * 3
         
         # Create token boundaries - since these are all video tokens
         token_boundaries = defaultdict(list)
@@ -928,7 +923,8 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
         if parallel_state.get_context_parallel_world_size() > 1:
             data_token = get_batch_on_this_cp_rank(data_token)
         ######################### TOKENIZATION happens here #########################
-
+        input_token_len = (token_boundary[1] // 3) * 2
+        generate_token_len = (token_boundary[1] // 3) * 1
         # for our case:
         # data_tokens shape: torch.Size([1, 23040])
         # batch_size: 1
@@ -943,9 +939,9 @@ class ARBaseGenerationPipeline(BaseWorldGenerationPipeline):
         
         ground_truth_tokens = data_token
         print(f"ground_truth_tokens shape: {ground_truth_tokens.shape}")
-        input_tokens = data_token[0 : token_boundary[1]]  # [B, L]
+        input_tokens = data_token[0 : input_token_len]  # [B, L]
         print(f"input_tokens shape: {input_tokens.shape}")
-        num_tokens_to_generate = data_token.shape[0] - token_boundary[1]
+        num_tokens_to_generate = generate_token_len
         input_tokens_list = [input_tokens.tolist()]  # -1 is to exclude eov token
         log.debug(
             f"Run sampling. # input condition tokens: {len(input_tokens_list[0])}; # generate tokens: {num_tokens_to_generate + num_eov_tokens}; "

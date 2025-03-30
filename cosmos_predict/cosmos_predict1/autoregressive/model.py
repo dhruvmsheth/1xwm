@@ -481,7 +481,11 @@ class AutoRegressiveModel(torch.nn.Module):
         batch_size, prompt_len = prompt_tokens.shape 
         # batch size = 1 and prompt_len = ((NUM_TOTAL_FRAMES_I // 8 + 1) * (WIDTH_I // 16) * (HEIGHT_I // 16)) since model is 8x16x16 DV encoder
         print(f"prompt_len: {prompt_len}")
+
+        print(f"max_gen_len: {max_gen_len}")
+        print(f"prompt_len: {prompt_len}")
         total_len = min(params.max_seq_len, max_gen_len + prompt_len)
+        print(f"total_len: {total_len}")
         if max_gen_len + prompt_len > params.max_seq_len:
             log.warning(
                 f"max_gen_len + prompt_len={max_gen_len + prompt_len} exceeds max_seq_len={params.max_seq_len}, truncate max_gen_len to {params.max_seq_len - prompt_len}"
@@ -572,7 +576,15 @@ class AutoRegressiveModel(torch.nn.Module):
         if verbose:
             prefill_time = time.time() - prefill_start
 
+        seq_temp = seq.clone()
+        print(f"initial seq shape: {seq.shape}")
+        print(f"next_token shape: {next_token.shape}")
+        print(f"prompt_len: {prompt_len}")
+        print(f"seq[:, [prompt_len] initial: {seq[:, [prompt_len]]}")
         seq[:, [prompt_len]] = next_token.to(dtype=seq.dtype)
+        print(f"seq shape after: {seq.shape}")
+        print(f"seq[:, [prompt_len] after: {seq[:, [prompt_len]]}")
+        print(f"difference between seq and seq_temp: {seq - seq_temp}")
         input_pos = torch.tensor([prompt_len], dtype=torch.long, device="cuda")
         stop_tokens = self.tokenizer.stop_tokens if stop_tokens is None else stop_tokens
         stop_tokens = torch.tensor(list(stop_tokens), dtype=torch.long, device="cuda")
