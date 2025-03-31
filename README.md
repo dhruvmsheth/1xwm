@@ -57,146 +57,111 @@ CUDA_HOME=$CONDA_PREFIX PYTHONPATH=$(pwd) python cosmos_predict1/autoregressive/
 
 ---
 
-## Explanation:
+### Video Tokenization in Cosmos
 
-## Additional Challenge Details
-
-1. We've provided `magvit2.ckpt` in the dataset download, which are the weights for a [MAGVIT2](https://github.com/TencentARC/Open-MAGVIT2) encoder/decoder. The encoder allows you to tokenize external data to try to improve the metric.
-2. The loss metric is nonstandard compared to LLMs due to the vocabulary size of the image tokens, which was changed as of v1.0 release (Jul 8, 2024). Instead of computing cross entropy loss on logits with 2^18 classes, we compute cross entropy losses on 2x 2^9 class predictions and sum them up. The rationale for this is that the large vocabulary size (2^18) makes it very memory-intensive to store a logit tensor of size `(B, 2^18, T, 16, 16)`. Therefore, the compression challenge considers families of models with a factorized pmfs of the form p(x1, x2) = p(x1)p(x2). For sampling and evaluation challenge, a factorized pmf is a necessary criteria.
-3. For the compression challenge, we are making the deliberate choice to evaluate held-out data on the same factorized distribution p(x1, x2) = p(x1)p(x2) that we train on. Although unfactorized models of the form p(x1, x2) = f(x1, x2) ought to achieve lower cross entropy on test data by exploiting the off-block-diagonal terms of Cov(x1, x2), we want to encourage solutions that achieve lower losses while holding the factorization fixed.
-4. For the compression challenge, submissions may only use the *prior* actions to the current prompt frame. Submissions can predict subsequent actions autoregressively to improve performance, but these actions will not be provided with the prompt.
-5. Naive nearest-neighbor retrieval + seeking ahead to next frames from the training set will achieve reasonably good losses and sampling results on the dev-validation set, because there are similar sequences in the training set. However, we explicitly forbid these kinds of solutions (and the private test set penalizes these kinds of solutions).
-6. We will not be able to award prizes to individuals in U.S. sanctioned countries. We reserve the right to not award a prize if it violates the spirit of the challenge.
+The Cosmos model uses a discrete video tokenizer with 8×8×8 compression:
+- **Temporal compression**: 8× (every 8 frames → 1 latent frame)
+- **Spatial compression**: 8× in height and 8× in width
 
 
-### Metric Details
-There are different scenarios for evaluation, which vary in the degree of ground truth context the model receives.
-In decreasing order of context, these scenarios are:
-- **Fully Autoregressive**: the model receives a predetermined number of ground truth frames and autoregressively predicts all remaining frames.
-- **Temporally Teacher-forced**: the model receives all ground truth frames before the current frame and autoregressively predicts all tokens in the current frame.
-- **Fully Teacher-forced**: the model receives all ground truth tokens before the current token, 
-including tokens in the current frame. Only applicable for causal LMs.
 
-As an example, consider predicting the final token of a video, corresponding to the lower right patch of frame 15. 
-The context the model receives in each scenario is:
-- Fully Autoregressive: the first $t$x16x16 tokens are ground truth tokens corresponding to the first $t$ prompt frames, 
-and all remaining tokens are autoregressively generated, where $0 < t < 15$ is the predetermined number of prompt frames.
-- Temporally Teacher-forced: the first 15x16x16 tokens are ground truth tokens corresponding to the first 15 frames, 
-and all remaining tokens are autoregressively generated.
-- Fully Teacher-forced: all previous (16x16x16 - 1) tokens are ground truth tokens.
+Given this compression ratio, a sequence of 17 raw video frames results in a latent representation with dimensions:
 
-The compression challenge uses the "temporally teacher-forced" scenario.
-## Leaderboard
+$$T_{latent} \times H_{latent} \times W_{latent} = \lceil 17/8 \rceil \times H/8 \times W/8 = 3 \times 32 \times 32$$
 
-These are evaluation results on `data/val_v1.1`.
-<table>
-  <thead>
-    <tr>
-      <th>User</th>
-      <th>Temporally Teacher-forced<br>CE Loss</th>
-      <th>Temporally Teacher-forced<br>Token Accuracy</th>
-      <th>Temporally Teacher-forced<br>LPIPS</th>
-      <th>Generation Time* <br>(secs/frame)</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><a href="https://huggingface.co/1x-technologies/GENIE_138M">1x-technologies/GENIE_138M</a><br>(<code>--maskgit_steps 2</code>)</td>
-      <td>8.79</td>
-      <td>0.0320</td>
-      <td>0.207</td>
-      <td>0.075</td>
-    </tr>
-    <tr>
-      <td><a href="https://huggingface.co/1x-technologies/GENIE_35M">1x-technologies/GENIE_35M</a><br>(<code>--maskgit_steps 2</code>)</td>
-      <td>8.99</td>
-      <td>0.0301</td>
-      <td>0.217</td>
-      <td>0.030</td>
-    </tr>
-  </tbody>
-</table>
-*Generation time is the time to generate latents on a RTX 4090 GPU, and excludes the time to decode latents to images.
+This creates a total of 3×32×32 = 3,072 tokens per video clip. For 256×256 input frames, each latent frame is represented as a 32×32 grid of tokens.
+
+### 2. Inference with Pre-trained Autoregressive Models
+
+#### 2.1 Context and Generation Windows
+
+Our inference operates in a fully autoregressive scenario with:
+- **Prompt Frames**: First 9 frames used as conditioning context
+- **Predicted Frames**: Next 8 frames generated autoregressively
 
 
-## Help us Improve the Challenge!
+#### 2.2 Token Organization Mathematically
 
-Beyond the World Model Challenge, we also want to make the challenges and datasets more useful for *your* research questions. Want more data interacting with humans? More safety-critical tasks like carrying cups of hot coffee without spilling? More dextrous tool use? Robots working with other robots? Robots dressing themselves in the mirror? Think of 1X as the operations team for getting you high quality humanoid data in extremely diverse scenarios.
+For a 17-frame sequence tokenized to 3 latent frames:
 
-Email challenge@1x.tech with your requests (and why you think the data is important) and we will try to include it in a future data release. You can also discuss your data questions with the community on [Discord](https://discord.gg/UMnzbTkw). 
+$$\text{Tokens} = [\underbrace{t_1, t_2, ..., t_{2048}}_{\text{9 prompt frames (2 latent frames)}}, \underbrace{t_{2049}, ..., t_{3072}}_{\text{8 predicted frames (1 latent frame)}}]$$
 
-We also welcome donors to help us increase the bounty.
+In the latent grid layout (3×32×32):
+- The first 2 frames in the temporal dimension (2×32×32 = 2048 tokens) serve as context
+- The last frame (1×32×32 = 1024 tokens) is predicted autoregressively
 
-## Run the following:
-```
-$ CUDA_HOME=$CONDA_PREFIX PYTHONPATH=$(pwd) python cosmos_predict1/autoregressive/inference/wm_compression.py     --checkpoint_dir checkpoints     --ar_model_dir Cosmos-Predict1-4B     --input_type tokens --input_tokens_dir /workspace/data/val_v2.0/     --top_p 0.8     --temperature 1.0    --video_save_name
+This is because the groups are formed such that the first frame is downsampled in a temporally caausal manner to the first latent frame. The paper doesn't explicitly mention this, but my assumption is that this helps in retreiving more information from the first frame as context.
+
+The tokenizer compresses the temporal dimension from $(1 + T)$ raw frames to $(1 + T')$ latent frames, where:
+
+$$T' = \lceil T/8 \rceil$$
+
+So, the 17-frame sequence is compressed to 3 latent frames
+
+#### 2.1 Causal Temporal Design
+
+The tokenizer uses a temporally causal design so that each stage processes only current and past frames, independent of future frames. So for the 8x8x8 tokenized dataset given, it was safe to extract the first 2048 tokens representing the first 9 frames as context and then autoregressively generate the next 1024 tokens representing the next 8 frames since the encoding for the first 9 frames is not polluted by future frames.
+
+### Tokenization Process
+
+The tokenization begins with a 2-level wavelet transform that processes inputs in a group-wise manner:
+
+$$\{x_0, x_{1:4}, x_{5:8}, \ldots, x_{(T-3):T}\} \rightarrow \{g_0, g_1, g_2, \ldots, g_{T/4}\}$$
+
+This transformation downsamples inputs by a factor of 4 along all dimensions (x, y, t) and then subsequent encoder stages process frames in a temporally causal manner:
+
+$$\{g_0, g_{0:1}, g_{0:2}, \ldots\} \rightarrow \{\xi_0, \xi_1, \xi_2, \ldots\}$$
+
+
+#### 2.3 Cross-Entropy Loss Calculation
+
+The evaluation metric I use is cross-entropy loss averaged on all the 8 generated frames, calculated as follows:
+
+```python
+# Extract the relevant logits for frames being predicted
+future_logits = generation_logits[0, :ground_truth_future_tokens.size(0), :]  # [seq_len, vocab_size]
+        
+# Calculate cross entropy between model predictions and ground truth
+ce_loss = F.cross_entropy(future_logits, ground_truth_future_tokens).item()
 ```
 
-## Citation
+I'm not sure if this is the temporally teacher forced loss that the challenge expects, but I calculated the loss as follows:
+- The model receives all ground truth tokens from the prompt frames
+- The model autoregressively predicts all tokens in the future frames
+- I compare predictions against ground truth for those future tokens only
 
-If you use this software or dataset in your work, please cite it using the "Cite this repository" button on Github.
+### Run:
 
-## Changelog
+Our current implementation uses the pre-trained 1-4B autoregressive model to evaluate performance on the 8×8×8 tokenized dataset:
 
-- v1.1 - Release compression challenge criteria; removed pauses and discontinuous videos from dataset; higher image crop.
-- v1.0 - More efficient MAGVIT2 tokenizer with 16x16 (C=2^18) mapping to 256x256 images, providing raw action data.
-- v0.0.1 - Initial challenge release with 20x20 (C=1000) image tokenizer mapping to 160x160 images.
+```bash
+CUDA_HOME=$CONDA_PREFIX PYTHONPATH=$(pwd) python cosmos_predict1/autoregressive/inference/wm_compression.py \
+    --checkpoint_dir checkpoints \
+    --ar_model_dir Cosmos-Predict1-4B \
+    --input_type tokens --input_tokens_dir /workspace/data/val_v2.0/ \
+    --top_p 0.8 \
+    --temperature 1.0 \
+    --video_save_name autoregressive-4b1-tokens --only_eval
+```
 
+However, as noted in the examples above, the COSMOS 1-4B model was originally trained using a Discrete Video Tokenizer 8×16×16-720p tokenizer, not the 8×8×8 tokenizer used in the validation set. This is why we have suboptimal results.
 
-## Dataset Metadata
-The following table is necessary for this dataset to be indexed by search
-engines such as <a href="https://g.co/datasetsearch">Google Dataset Search</a>.
-<div itemscope itemtype="http://schema.org/Dataset">
-<table>
-  <tr>
-    <th>property</th>
-    <th>value</th>
-  </tr>
-  <tr>
-    <td>name</td>
-    <td><code itemprop="name">1X World Model Challenge</code></td>
-  </tr>
-  <tr>
-    <td>url</td>
-    <td><code itemprop="url">https://github.com/1x-technologies/1xgpt</code></td>
-  </tr>
-  <tr>
-    <td>description</td>
-    <td><code itemprop="description">A dataset of over 100 hours of compressed image tokens + raw actions across a fleet of EVE robots.</code></td>
-  </tr>
-  <tr>
-    <td>provider</td>
-    <td>
-      <div itemscope itemtype="http://schema.org/Organization" itemprop="provider">
-        <table>
-          <tr>
-            <th>property</th>
-            <th>value</th>
-          </tr>
-          <tr>
-            <td>name</td>
-            <td><code itemprop="name">1X Technologies</code></td>
-          </tr>
-        </table>
-      </div>
-    </td>
-  </tr>
-  <tr>
-    <td>license</td>
-    <td>
-      <div itemscope itemtype="http://schema.org/CreativeWork" itemprop="license">
-        <table>
-          <tr>
-            <th>property</th>
-            <th>value</th>
-          </tr>
-          <tr>
-            <td>name</td>
-            <td><code itemprop="name">Apache 2.0</code></td>
-          </tr>
-        </table>
-      </div>
-    </td>
-  </tr>
-</table>
-</div>
+### Current WIP:
+
+- [x] Part 1: Initial Evaluation
+  - Run inference using pretrained 1-4B autoregressive model
+  - Evaluate performance on 8x8x8 tokenized dataset
+  - Analyze baseline results
+
+- [ ] Part 2: Model Post-Training
+  - Post-train model on train_v2.0 8x8x8 tokenized dataset
+  - Use temporally teacher-forced loss objective
+  - Evaluate updated model performance
+
+- [ ] Part 3: Action Integration
+  - Integrate Pi0 FAST tokenizer for encoding action sequences
+  - Implement cross-attention between:
+    - Transformer model features
+    - Action embeddings from FAST encoder
+  - Evaluate final model with action conditioning
+
