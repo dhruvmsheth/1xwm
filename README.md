@@ -84,7 +84,7 @@ Our inference operates in a fully autoregressive scenario with:
 
 For a 17-frame sequence tokenized to 3 latent frames:
 
-$\text{Tokens} = [\underbrace{t_1, t_2, ..., t_{2048}}_\text{9 prompt frames (2 latent frames)}, \underbrace{t_{2049}, ..., t_{3072}}_\text{8 predicted frames (1 latent frame)}]$
+$\text{Tokens} = [t_1, t_2, ..., t_{2048} \text{ (9 prompt frames, 2 latent frames)}, t_{2049}, ..., t_{3072} \text{ (8 predicted frames, 1 latent frame)}]$
 
 In the latent grid layout (3×32×32):
 - The first 2 frames in the temporal dimension (2×32×32 = 2048 tokens) serve as context
