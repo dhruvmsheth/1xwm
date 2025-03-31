@@ -128,7 +128,7 @@ def main(args):
             sampling_config=sampling_config,
             data_token=data_token_cur_batch,
             token_boundary=token_boundary_cur_batch,
-            only_eval=args.only_eval
+            only_eval=args.only_eval,
         )
         if out_vid is None and not args.only_eval:
             log.critical("Guardrail blocked base generation.")

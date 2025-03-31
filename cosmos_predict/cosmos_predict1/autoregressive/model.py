@@ -36,7 +36,7 @@ from cosmos_predict1.autoregressive.utils.checkpoint import (
     process_state_dict,
     substrings_to_ignore,
 )
-from cosmos_predict1.autoregressive.utils.sampling import decode_n_tokens, decode_one_token, prefill
+from cosmos_predict1.autoregressive.utils.sampling import decode_n_tokens, decode_one_token, prefill, decode_n_tokens_raw, decode_one_token_raw, prefill_raw
 from cosmos_predict1.utils import log, misc
 
 
@@ -539,7 +539,7 @@ class AutoRegressiveModel(torch.nn.Module):
         # Prefill stage
         if not eval_only:
             # Regular generation - just get the next token
-            next_token = self.prefill(
+            next_token = prefill_raw(
                 self.model,
                 input_pos=input_pos,
                 tokens=prompt_tokens if prompt_token_embeddings is None else None,
@@ -594,7 +594,7 @@ class AutoRegressiveModel(torch.nn.Module):
 
         # Decode stage
         if not eval_only:
-            generated_tokens = decode_n_tokens(
+            generated_tokens = decode_n_tokens_raw(
                 self.model,
                 cur_token=next_token.view(batch_size, -1),
                 input_pos=input_pos,
@@ -628,26 +628,25 @@ class AutoRegressiveModel(torch.nn.Module):
             gen_len = len(generated_tokens)
             generated_tokens = torch.cat(generated_tokens, dim=1)
             
-            # Print the original shapes for debugging
-            print(f"prefill_last_logits shape: {prefill_last_logits.shape}")
-            print(f"all_logits original shape: {all_logits.shape}")
-            
-            # Handle different dimension scenarios
-            if all_logits.dim() == 4:  # If all_logits has 4 dimensions
-                # Most likely shape: [batch_size, seq_len, something, vocab_size]
-                # We need to reshape to 3D by combining seq_len and the extra dimension
-                all_logits_reshaped = all_logits.view(all_logits.size(0), -1, all_logits.size(-1))
-                print(f"all_logits reshaped to 3D: {all_logits_reshaped.shape}")
-                
-                # Now concatenate with prefill_last_logits (which is 3D)
-                stacked_logits = torch.cat([prefill_last_logits, all_logits_reshaped], dim=1)
-            else:  # If already 3D (matching prefill_last_logits)
-                # Normal case - just concatenate
-                stacked_logits = torch.cat([prefill_last_logits, all_logits], dim=1)
-            
-            print(f"Prefill last token logits shape: {prefill_last_logits.shape if prefill_last_logits is not None else None}")
-            print(f"All logits shape: {all_logits.shape}")
-            print(f"Combined logits shape: {stacked_logits.shape}")
+            if all_logits is not None:
+                # Print the original shapes for debugging
+                print(f"prefill_last_logits shape: {prefill_last_logits.shape}")
+                print(f"all_logits original shape: {all_logits.shape}")            
+                # Handle different dimension scenarios
+                if all_logits.dim() == 4:  # If all_logits has 4 dimensions
+                    # Most likely shape: [batch_size, seq_len, something, vocab_size]
+                    # We need to reshape to 3D by combining seq_len and the extra dimension
+                    all_logits_reshaped = all_logits.view(all_logits.size(0), -1, all_logits.size(-1))
+                    print(f"all_logits reshaped to 3D: {all_logits_reshaped.shape}")
+                    
+                    # Now concatenate with prefill_last_logits (which is 3D)
+                    stacked_logits = torch.cat([prefill_last_logits, all_logits_reshaped], dim=1)
+                else:  # If already 3D (matching prefill_last_logits)
+                    # Normal case - just concatenate
+                    stacked_logits = torch.cat([prefill_last_logits, all_logits], dim=1)            
+                print(f"Prefill last token logits shape: {prefill_last_logits.shape if prefill_last_logits is not None else None}")
+                print(f"All logits shape: {all_logits.shape}")
+                print(f"Combined logits shape: {stacked_logits.shape}")
         
         if verbose:
             decode_time = time.time() - decode_start

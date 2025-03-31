@@ -10,3 +10,4 @@ cosmos_predict/checkpoints/
 cosmos_predict/outputs/
 
 cosmos_predict/assets
+cosmos_predict/metrics/

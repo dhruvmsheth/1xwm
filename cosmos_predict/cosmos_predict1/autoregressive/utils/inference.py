@@ -42,10 +42,10 @@ INPUTS = {
     "PIXEL_CHUNK_DURATION_I": 17,
     "NUM_TOTAL_FRAMES_I": NUM_TOTAL_FRAMES,
     "NUM_CONDITION_LATENTS_T_I": 1,
-    "VIDEO_HEIGHT_I": 256,
-    "VIDEO_WIDTH_I": 256,
+    "VIDEO_HEIGHT_I": 512,
+    "VIDEO_WIDTH_I": 512,
+    "COMPRESSION_RATIO_I": [8, 16, 16],
 }
-
 
 def add_common_arguments(parser):
     """Add common command line arguments.
@@ -164,6 +164,115 @@ def retrieve_token_path(token_dir: str):
         "segments": os.path.join(token_dir, "segments_idx_0.json"),
     }
     return token_path
+
+def retrieve_raw_video_path(video_dir: str):
+    video_path = {
+        "videos": os.path.join(video_dir, "video_0.mp4"),
+        "states": os.path.join(video_dir, "states_0.bin"),
+        "metadata": os.path.join(video_dir, "metadata_0.json"),
+        "segments": os.path.join(video_dir, "segments_idx_0.json"),
+    }
+    return video_path
+
+def prepare_raw_video(input_map: dict[str, str], num_input_frames: int) -> dict[str, dict]:
+    """
+    Prepares video with lazy loading.
+    
+    Args:
+        input_map (dict[str, str]): Dictionary containing input paths
+        num_input_frames (int): Number of input frames to use
+        
+    Returns:
+        dict: Dictionary containing video_gt and video_prompt dictionaries
+    """
+    video_path = input_map["videos"]
+    metadata_path = input_map["metadata"]
+
+    with open(metadata_path, "r") as f:
+        metadata = json.load(f)
+    total_frames = metadata["shard_num_frames"]
+    total_chunks = math.ceil(total_frames / 17)
+    print(f"Total chunks in shard: {total_chunks}")
+    
+    # Create lazy video loaders
+    video_gt_dict = LazyChunkDict(
+        video_path=video_path,
+        total_chunks=total_chunks,
+        num_input_frames=num_input_frames,
+        is_prompt=False
+    )
+    
+    video_prompt_dict = LazyChunkDict(
+        video_path=video_path,
+        total_chunks=total_chunks,
+        num_input_frames=num_input_frames,
+        is_prompt=True
+    )
+    
+    return {
+        "video_gt": video_gt_dict,
+        "video_prompt": video_prompt_dict
+    }
+
+
+class LazyChunkDict:
+    """Dictionary-like object that lazily loads video chunks when accessed."""
+    
+    def __init__(self, video_path, total_chunks, num_input_frames, is_prompt):
+        self.video_path = video_path
+        self.total_chunks = total_chunks
+        self.num_input_frames = num_input_frames
+        self.is_prompt = is_prompt
+        self.frames_per_chunk = NUM_TOTAL_FRAMES
+        self.chunk_cache = {}  # Cache for loaded chunks
+        self.video_data = None
+    
+    def __getitem__(self, key):
+        """Lazily load a chunk when accessed by key."""
+        # Initialize video data if not already done
+        self._initialize_video()
+        chunk_idx = int(key.split("_")[1])
+        chunk = self.video_data[chunk_idx]
+        if self.is_prompt:
+            result = torch.zeros_like(chunk)
+            result[:self.num_input_frames] = chunk[:self.num_input_frames]
+            last_frame = chunk[self.num_input_frames-1:self.num_input_frames]
+            result[self.num_input_frames:] = last_frame.repeat(
+                self.frames_per_chunk - self.num_input_frames, 1, 1, 1
+            )
+        else:
+            result = chunk
+        # Add batch dimension to match expected shape (1, NUM_TOTAL_FRAMES, 3, H, W)
+        result = result.unsqueeze(0)
+        return result
+    
+    def _initialize_video(self):
+        """Lazy initialize video data."""
+        if self.video_data is None:
+            print(f"Initializing video data for {'prompt' if self.is_prompt else 'ground truth'} (first access)")
+            
+            # Read the entire video
+            video, _, _ = torchvision.io.read_video(self.video_path, pts_unit="sec")
+            video = video.float() / 255.0 
+            video = video * 2 - 1
+            video = video.permute(0, 3, 1, 2)  # [T, C, H, W]
+            total_needed = self.total_chunks * self.frames_per_chunk
+            if video.shape[0] < total_needed:
+                pad_frames = total_needed - video.shape[0]
+                video = torch.cat([video, video[-1:].repeat(pad_frames, 1, 1, 1)], dim=0)
+            self.video_data = video.reshape(self.total_chunks, self.frames_per_chunk, 3, 512, 512)
+    
+    def __iter__(self):
+        """Allow iteration over keys."""
+        return iter([f"sample_{i}" for i in range(self.total_chunks)])
+    
+    def keys(self):
+        """Return all possible keys."""
+        return [f"sample_{i}" for i in range(self.total_chunks)]
+    
+    def __len__(self):
+        """Return number of chunks."""
+        return self.total_chunks
 
 
 def resize_input(video: torch.Tensor, resolution: list[int]):
@@ -322,7 +431,7 @@ def load_videos_from_list(flist: List[str], data_resolution: List[int], num_inpu
                 (video, video[-1, :, :, :].unsqueeze(0).repeat(NUM_TOTAL_FRAMES - num_input_frames, 1, 1, 1)),
                 dim=0,
             )
-
+            # video is of shape (NUM_TOTAL_FRAMES, 3, 512, 512)
             video = video.permute(0, 3, 1, 2)
 
             log.debug(
@@ -334,7 +443,6 @@ def load_videos_from_list(flist: List[str], data_resolution: List[int], num_inpu
             all_videos[fname] = video.transpose(0, 1).unsqueeze(0)
     # all videos here is dict with just one key-value pair
     return all_videos
-
 
 def load_vision_input(
     input_type: str,

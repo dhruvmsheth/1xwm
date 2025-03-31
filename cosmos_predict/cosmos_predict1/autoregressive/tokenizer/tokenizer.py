@@ -217,7 +217,7 @@ class DiscreteMultimodalTokenizer:
 
         return video_tokens
 
-    def tokenize(self, data_batch: dict):
+    def tokenize(self, data_batch: dict, key: Optional[str] = None):
         r"""Function to tokenize data_dict.
         Args:
             data_batch (dict): Input data dict
@@ -291,7 +291,8 @@ class DiscreteMultimodalTokenizer:
 
         # Tokenize the video
         if self.video_tokenizer is not None and self.tokenizer_config.video_tokenizer.tokenize_here:
-            key = self.tokenizer_config.video_tokenizer.data_key
+            if key is None:
+                key = self.tokenizer_config.video_tokenizer.data_key
             assert key in data_batch, f"Key {key} should be present in data for video tokenizer"
             # batch_size is 1 for our case
             batch_size = len(data_batch[key]) if batch_size is None else batch_size
@@ -305,19 +306,34 @@ class DiscreteMultimodalTokenizer:
                 pixel_chunk_duration = 1
             tokens_video = self._tokenize_video(data_batch[key], pixel_chunk_duration=pixel_chunk_duration)
             # returns tokens_video of shape (1, T*H*W) where T is for the entire video, not just prompt
-            if len(tokens) == 0:
-                # this would be true if text tokenizer is not used
-                tokens = tokens_video
-                for i in range(batch_size):
-                    # so token boundary that we set is from start of video to end of video
-                    token_boundaries["video"].append((0, len(tokens[i])))
-                    # [B,] each entry is ((0, len(tokens[i])))
+            if key == "gt_video":
+                if len(tokens) == 0:
+                    # this would be true if text tokenizer is not used
+                    tokens = tokens_video
+                    for i in range(batch_size):
+                        # so token boundary that we set is from start of video to end of video
+                        token_boundaries["video"].append((0, len(tokens[i])))
+                        # [B,] each entry is ((0, len(tokens[i])))
+                else:
+                    # NOTE:
+                    for i in range(batch_size):
+                        # batch_size is 1 for our case
+                        token_boundaries["video"].append((len(tokens[i]), len(tokens[i]) + len(tokens_video[i])))
+                        tokens[i] = tokens[i] + tokens_video[i]
             else:
-                # NOTE:
-                for i in range(batch_size):
-                    # batch_size is 1 for our case
-                    token_boundaries["video"].append((len(tokens[i]), len(tokens[i]) + len(tokens_video[i])))
-                    tokens[i] = tokens[i] + tokens_video[i]
+                if len(tokens) == 0:
+                    # this would be true if text tokenizer is not used
+                    tokens = tokens_video
+                    for i in range(batch_size):
+                        # so token boundary that we set is from start of video to end of video
+                        token_boundaries["video"].append((0, len(tokens[i])))
+                        # [B,] each entry is ((0, len(tokens[i])))
+                else:
+                    # NOTE:
+                    for i in range(batch_size):
+                        # batch_size is 1 for our case
+                        token_boundaries["video"].append((len(tokens[i]), len(tokens[i]) + len(tokens_video[i])))
+                        tokens[i] = tokens[i] + tokens_video[i]
 
         # Combine the tokens and do padding
         print(f"len tokens: {len(tokens)}")

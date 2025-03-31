@@ -3,112 +3,61 @@
 CUDA_HOME=$CONDA_PREFIX PYTHONPATH=$(pwd) python cosmos_predict1/autoregressive/inference/wm_compression.py     --checkpoint_dir checkpoints     --ar_model_dir Cosmos-Predict1-4B     --input_type tokens --input_tokens_dir /workspace/data/val_v2.0/     --top_p 0.8     --temperature 1.0    --video_save_name autoregressive-4b1-tokens --only_eval
 ```
 
-# 1X World Model Challenge
+### Generated examples using 8x8x8 tokenizer provided in the v2.0 validation set. Using 1-4B autoregressive model.
 
-Progress in video generation may soon make it possible to evaluate robot policies in a completely learned world model. An end-to-end learned simulator of millions of robot environments would greatly accelerate progress in general-purpose robotics and provide a useful signal for scaling data and compute.
+> First 9 frames are the input frames, next 8 frames are the generated frames. Concatenated with the video is the ground truth video with 17 decoded frames.
 
-To accelerate progress in learned simulators for robots, we're announcing the 1X World Model Challenge, where the task is to predict future first-person observations of the [EVE Android](https://www.1x.tech/androids/eve). We provide over 100 hours of vector-quantized image tokens and raw actions collected from operating EVE at 1X offices, baseline world model (GENIE-style), and a frame-level MAGVIT2 autoencoder that compresses images into 16x16 tokens and decodes them back into images.
+> Note: the autoregressive model is trained using 8x16x16 tokenizer and not the 8x8x8 tokenizer which is why we have poor results. I'm working on the post-training right now.
 
-We hope that this dataset will be helpful to roboticists who want to experiment with a diverse set of general-purpose robotics data in human environments. A sufficiently powerful world model will allow anyone to access a "neurally-simulated EVE". The evaluation challenge is the ultimate goal, and we have cash prizes for intermediate goals like fitting the data well (compression challenge) and sampling plausible videos (sampling challenge).
+<table>
+  <tr>
+    <td><img src="assets/tokenized/sample_1_image.gif" width="150" /></td>
+    <td><img src="assets/tokenized/sample_11_image.gif" width="150" /></td>
+    <td><img src="assets/tokenized/sample_13_image.gif" width="150" /></td>
+    <td><img src="assets/tokenized/sample_24_image.gif" width="150" /></td>
+  </tr>
+  <tr>
+    <td><img src="assets/tokenized/sample_40_image.gif" width="150" /></td>
+    <td><img src="assets/tokenized/sample_72_image.gif" width="150" /></td>
+    <td><img src="assets/tokenized/sample_162_image.gif" width="150" /></td>
+    <td><img src="assets/tokenized/sample_248_image.gif" width="150" /></td>
+  </tr>
+  <tr>
+    <td><img src="assets/tokenized/sample_257_image.gif" width="150" /></td>
+    <td><img src="assets/tokenized/sample_375_image.gif" width="150" /></td>
+    <td><img src="assets/tokenized/sample_443_image.gif" width="150" /></td>
+    <td><img src="assets/tokenized/sample_445_image.gif" width="150" /></td>
+  </tr>
+  <tr>
+    <td><img src="assets/tokenized/sample_446_image.gif" width="150" /></td>
+    <td><img src="assets/tokenized/sample_455_image.gif" width="150" /></td>
+    <td><img src="assets/tokenized/sample_48_image.gif" width="150" /></td>
+    <td><img src="assets/tokenized/sample_9_image.gif" width="150" /></td>
+  </tr>
+</table>
 
-[Dataset on Huggingface](https://huggingface.co/datasets/1x-technologies/worldmodel)
+### Generated examples using 8x16x16 tokenizer. The raw data is encoded in this process. Using 1-4B autoregressive model.
 
-[Join the Discord](https://discord.gg/kk2HmvrQsN)
+> First 9 frames are the input frames, next 8 frames are the generated frames.
 
-[Phase 1 Blog Post](https://www.1x.tech/discover/1x-world-model), [Phase 2 Blog Post](https://www.1x.tech/discover/1x-world-model-sampling-challenge)
+<table>
+  <tr>
+    <td><img src="assets/raw/sample_17.gif" width="150" /></td>
+    <td><img src="assets/raw/sample_2.gif" width="150" /></td>
+    <td><img src="assets/raw/sample_20.gif" width="150" /></td>
+    <td><img src="assets/raw/sample_23.gif" width="150" /></td>
+  </tr>
+  <tr>
+    <td><img src="assets/raw/sample_27.gif" width="150" /></td>
+    <td><img src="assets/raw/sample_33.gif" width="150" /></td>
+    <td><img src="assets/raw/sample_36.gif" width="150" /></td>
+    <td><img src="assets/raw/sample_9.gif" width="150" /></td>
+  </tr>
+</table>
 
-Stay tuned for updates on Phase 2 of the World Model Challenge!
+---
 
-|||||||||
-|---|---|---|---|---|---|---|---|
-|![til](./assets/v1.0/generated_offset700100.gif)|![til](./assets/v1.0/generated_offset225100.gif)|![til](./assets/v1.0/generated_offset775100.gif)|![til](./assets/v1.0/generated_offset875100.gif)|![til](./assets/v1.0/generated_offset475100.gif)|![til](./assets/v1.0/generated_offset725100.gif)|![til](./assets/v1.0/generated_offset525100.gif)|![til](./assets/v1.0/generated_offset100.gif)|
-|![til](./assets/v1.0/generated_offset925100.gif)|![til](./assets/v1.0/generated_offset975100.gif)|![til](./assets/v1.0/generated_offset625100.gif)|![til](./assets/v1.0/generated_offset675100.gif)|![til](./assets/v1.0/generated_offset400100.gif)|![til](./assets/v1.0/generated_offset175100.gif)|![til](./assets/v1.0/generated_offset850100.gif)|![til](./assets/v1.0/generated_offset100100.gif)|
-|![til](./assets/v1.0/generated_offset125100.gif)|![til](./assets/v1.0/generated_offset375100.gif)|![til](./assets/v1.0/generated_offset275100.gif)|![til](./assets/v1.0/generated_offset800100.gif)|![til](./assets/v1.0/generated_offset600100.gif)|![til](./assets/v1.0/generated_offset1000100.gif)|![til](./assets/v1.0/generated_offset450100.gif)|![til](./assets/v1.0/generated_offset50100.gif)|
-|![til](./assets/v1.0/generated_offset250100.gif)|![til](./assets/v1.0/generated_offset150100.gif)|![til](./assets/v1.0/generated_offset825100.gif)|![til](./assets/v1.0/generated_offset950100.gif)|![til](./assets/v1.0/generated_offset25100.gif)|![til](./assets/v1.0/generated_offset750100.gif)|![til](./assets/v1.0/generated_offset650100.gif)|![til](./assets/v1.0/generated_offset300100.gif)|
-
-
-## Challenges
-
-Each example is a sequence of 16 first-person images from the robot at 2Hz (so 8 seconds total), and your goal is to predict the next image given the previous ones.
-
-- **Compression Challenge ($10k prize)**: Predict the discrete distribution of tokens in the next image.
-  - Criteria: Be the first to achieve a **[temporally teacher-forced](#metric-details) loss below 8.0** on our private test set.
-- **Sampling Challenge ($10k prize)**: Future prediction methods are not necessarily restricted to next-logit prediction. You can, for example, use methods like GANs, Diffusion, and MaskGIT to generate future images. Criteria will be released shortly.
-- **Evaluation Challenge (upcoming)**: given a set of N policies, $\pi_1, \pi_2, ... \pi_N$, where each policy $\pi_i(a_t|z_t)$ predicts action tokens from image tokens, can you evaluate all of the policies inside a "world model" $p(z_{t+1}|z_t, a_t)$ and tell us the ranked order of which policy is the best?
-
-These challenges are largely inspired by the [commavq compression challenge](https://github.com/commaai/commavq). Please read the [Additional Challenge Details](#additional-challenge-details)
-
-## Getting Started
-We require `Python 3.10` or later. This code was tested with `Python 3.10.12`.
-
-```
-# Install dependencies and download data
-./build.sh 
-
-# Source the Python environment
-source venv/bin/activate
-```
-
-## GENIE
-
-This repo provides an implementation of the spatio-temporal transformer and MaskGIT sampler as described in [Genie: Generative Interactive Environments](https://arxiv.org/abs/2402.15391). Note that this implementation only trains on video sequences, not actions (though it is trivial to add this via an additive embedding).
-
-```
-# Train the GENIE model
-python train.py --genie_config genie/configs/magvit_n32_h8_d256.json --output_dir data/genie_model --max_eval_steps 10
-
-# Generate frames from trained model
-python genie/generate.py --checkpoint_dir data/genie_model/final_checkpt
-
-# Visualize generated frames
-python visualize.py --token_dir data/genie_generated
-
-# Evaluate the trained model
-python genie/evaluate.py --checkpoint_dir data/genie_model/final_checkpt
-```
-
-### 1X GENIE Baseline
-We provide two pre-trained GENIE models, linked in the [leaderboard](#leaderboard).
-```
-# Generate and visualize
-output_dir='data/genie_baseline_generated'
-for i in {0..240..10}; do
-    python genie/generate.py --checkpoint_dir 1x-technologies/GENIE_138M \
-        --output_dir $output_dir --example_ind $i --maskgit_steps 2 --temperature 0
-    python visualize.py --token_dir $output_dir
-    mv $output_dir/generated_offset0.gif $output_dir/example_$i.gif
-    mv $output_dir/generated_comic_offset0.png $output_dir/example_$i.png
-done
-
-# Evaluate
-python genie/evaluate.py --checkpoint_dir 1x-technologies/GENIE_138M --maskgit_steps 2
-```
- 
-## Data Description
-
-[See the Dataset Card on Huggingface](https://huggingface.co/datasets/1x-technologies/worldmodel).
-
-The training dataset is stored in the `data/train_v1.1` directory.
-
-## Participating in the Challenges: 
-
-Please read the [Additional Challenge Details](#additional-challenge-details) first for clarification on rules.
-
-Email source code + build script + some info about your approach to challenge@1x.tech. We will evaluate your submission on our held-out dataset and email you back with the results. 
-
-Please send us the following:
-- your chosen username (can be your real name or a pseudonym, will be tied 1:1 to your email)
-- source code as a .zip file
-- how many flops you used (approximately) to train the model
-- any external data you may have used to train your model
-- eval performance you got on the provided validation set (so we know roughly what you expect from your model)
-
-After manually reviewing your code, we run evals in a 22.04 + CUDA 12.3 sandboxed environment like so:
-
-```
-./build.sh # installs any dependencies + model weights you need
-./evaluate.py --val_data_dir <PATH-TO-HELD-OUT-DATA>  # runs your model on held-out data
-```
+## Explanation:
 
 ## Additional Challenge Details
 

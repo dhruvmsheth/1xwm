@@ -148,6 +148,43 @@ def prefill(
     else:
         return next_token
 
+def prefill_raw(
+    model: Transformer,
+    input_pos: torch.Tensor,
+    tokens: torch.Tensor = None,
+    token_embeddings: torch.Tensor = None,
+    temperature: float = 1.0,
+    top_k: Optional[int] = None,
+    top_p: Optional[float] = None,
+    **kwargs,
+) -> torch.Tensor:
+    logits = model(tokens=tokens, token_embeddings=token_embeddings, input_pos=input_pos, **kwargs)
+    # Only top-p or top-k can be provided
+    assert (
+        top_p is None or top_k is None
+    ), "Only one of top-p or top-k can be provided, got top-p={top_p} and top-k={top_k}"
+    if top_p is not None:
+        return sample_top_p(logits, temperature=temperature, top_p=top_p)[0]
+    else:
+        return sample_top_k(logits, temperature=temperature, top_k=top_k)[0]
+
+def decode_one_token_raw(
+    model: Transformer,
+    tokens: torch.Tensor,
+    input_pos: torch.Tensor,
+    temperature: float = 1.0,
+    top_k: Optional[int] = None,
+    top_p: Optional[float] = None,
+    **kwargs,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Decode a single token from the autoregressive model.
+    """
+    logits = model(tokens=tokens, input_pos=input_pos, **kwargs)
+    if top_p is not None:
+        return sample_top_p(logits, temperature=temperature, top_p=top_p)
+    else:
+        return sample_top_k(logits, temperature=temperature, top_k=top_k)
 
 def decode_one_token(
     model: Transformer,
@@ -177,6 +214,56 @@ def decode_one_token(
             next_token, next_prob = sample_top_k(logits, temperature=temperature, top_k=top_k)
         return logits, next_token, next_prob
 
+def decode_n_tokens_raw(
+    model: Transformer,
+    cur_token: torch.Tensor,
+    input_pos: torch.Tensor,
+    num_new_tokens: int,
+    stop_tokens: torch.Tensor = None,
+    temperature: float = 1.0,
+    top_p: Optional[float] = None,
+    top_k: Optional[int] = None,
+    return_probs: bool = False,
+    decode_one_token_function=decode_one_token_raw,
+    **kwargs,
+):
+    """
+    Decode n tokens from the autoregressive model.
+    Adapted from https://github.com/pytorch-labs/gpt-fast/blob/main/generate.py
+    """
+    new_tokens, new_probs = [], []
+    batch_size = cur_token.shape[0]
+    assert (
+        top_p is None or top_k is None
+    ), "Only one of top-p or top-k can be provided, got top-p={top_p} and top-k={top_k}"
+    if stop_tokens is not None:
+        # Indicator for whether the EOS token (stop token) has been reached for each sample in the batch
+        eos_reached = torch.tensor([False] * batch_size, device="cuda")
+    for t in range(num_new_tokens):
+        with sdpa_kernel([SDPBackend.MATH]):  # Actually better for Inductor to codegen attention here
+            next_token, next_prob = decode_one_token_function(
+                model,
+                tokens=cur_token,
+                input_pos=input_pos,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+                **kwargs,
+            )
+            input_pos += 1
+            if stop_tokens is not None and len(stop_tokens) > 0:
+                eos_reached = eos_reached | (torch.isin(next_token, stop_tokens))
+                if eos_reached.all():
+                    break
+            new_tokens.append(next_token.clone())
+            if return_probs:
+                new_probs.append(next_prob.clone())
+            cur_token = next_token.clone()
+
+    if return_probs:
+        return new_tokens, new_probs
+    else:
+        return new_tokens
 
 def decode_n_tokens(
     model: Transformer,

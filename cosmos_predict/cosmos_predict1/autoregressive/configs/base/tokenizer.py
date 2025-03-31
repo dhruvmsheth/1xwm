@@ -23,7 +23,7 @@ from cosmos_predict1.utils.lazy_config import LazyCall as L
 from cosmos_predict1.utils.lazy_config import LazyDict
 
 def create_discrete_video_fsq_tokenizer_state_dict_config(
-    ckpt_path, pixel_chunk_duration=17, compression_ratio=[8, 8, 8]
+    ckpt_path, pixel_chunk_duration=33, compression_ratio=[8, 16, 16]
 ) -> LazyDict:
     CausalDiscreteFactorizedVideoTokenizerConfig: LazyDict = L(CausalDiscreteVideoTokenizer)(
         # The new causal discrete tokenizer, that is at least 2x more efficient in memory and runtime.
