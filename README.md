@@ -160,8 +160,6 @@ However, as noted in the examples above, the COSMOS 1-4B model was originally tr
 
 - [ ] Part 3: Action Integration
   - Integrate Pi0 FAST tokenizer for encoding action sequences
-  - Implement cross-attention between:
-    - Transformer model features
-    - Action embeddings from FAST encoder
+  - Implement cross-attention between transformer model features and action embeddings from FAST encoder
   - Evaluate final model with action conditioning
 
