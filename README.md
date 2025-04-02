@@ -98,6 +98,9 @@ $$T' = \lceil T/8 \rceil$$
 
 So, the 17-frame sequence is compressed to 3 latent frames
 
+![image](https://github.com/user-attachments/assets/4c5596a9-f45d-4326-8f30-e8e6928fb7a1)
+
+
 #### 2.1 Causal Temporal Design
 
 The tokenizer uses a temporally causal design so that each stage processes only current and past frames, independent of future frames. So for the 8x8x8 tokenized dataset given, it was safe to extract the first 2048 tokens representing the first 9 frames as context and then autoregressively generate the next 1024 tokens representing the next 8 frames since the encoding for the first 9 frames is not polluted by future frames.
